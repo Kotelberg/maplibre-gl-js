@@ -181,14 +181,16 @@ function readRawComponent(dv: DataView, byteOffset: number, componentType: numbe
     }
 }
 
-// glTF 2.0 §3.9.4 normalized-integer dequantization (KHR_mesh_quantization's
-// non-extension-required normalized path — the "plain KHR_mesh_quantization"
-// case the port spec calls out as in-scope).
+// glTF 2.0 §3.9.4 normalized-integer dequantization. Core (extension-free) glTF only
+// allows this for *unsigned* component types (TEXCOORD_0/COLOR_0/WEIGHTS_0 accessors
+// with `normalized: true` UNSIGNED_BYTE/UNSIGNED_SHORT) — the signed BYTE/SHORT cases
+// exist in the spec's dequantization formula but are only reachable via
+// KHR_mesh_quantization-relaxed POSITION/NORMAL/TANGENT accessors, which this loader
+// does not support (removed as dead code — see `makePositionReader` below; quantization
+// support is future work alongside extension support generally).
 function normalizeComponent(raw: number, componentType: number): number {
     switch (componentType) {
-        case COMPONENT_TYPE_BYTE: return Math.max(raw / 127, -1);
         case COMPONENT_TYPE_UNSIGNED_BYTE: return raw / 255;
-        case COMPONENT_TYPE_SHORT: return Math.max(raw / 32767, -1);
         case COMPONENT_TYPE_UNSIGNED_SHORT: return raw / 65535;
         default: return raw;
     }
@@ -238,8 +240,9 @@ function decodeDataUri(uri: string): ArrayBuffer | null {
  * for anything this loader's subset does not support: a missing accessor,
  * a sparse accessor (explicitly out of scope — no palette/sparse
  * accessors, per the port spec), an unresolvable buffer, or an out-of-range
- * read. Normalization (KHR_mesh_quantization's plain quantized case) is
- * applied transparently, matching cgltf's `cgltf_accessor_read_float`.
+ * read. Normalization (core-spec normalized unsigned-integer accessors, e.g.
+ * TEXCOORD_0) is applied transparently, matching cgltf's
+ * `cgltf_accessor_read_float`.
  */
 function makeAccessorReader(json: GltfJson, binChunk: ArrayBuffer | null, accessorIndex: number): AccessorReader | null {
     const accessor = json.accessors?.[accessorIndex];
@@ -259,6 +262,15 @@ function makeAccessorReader(json: GltfJson, binChunk: ArrayBuffer | null, access
     const bufferData = resolveBufferData(json, binChunk, view.buffer);
     if (!bufferData) return null;
 
+    // Validate the bufferView's own declared extent against the buffer first — mirrors
+    // cgltf's two-stage `data_too_short` checks (view-in-buffer, then accessor-in-view).
+    const viewByteOffset = view.byteOffset || 0;
+    const viewByteLength = view.byteLength;
+    if (typeof viewByteLength !== 'number' || viewByteOffset < 0 ||
+        viewByteOffset + viewByteLength > bufferData.byteLength) {
+        return null;
+    }
+
     let compSize: number;
     try {
         compSize = componentSize(accessor.componentType);
@@ -267,9 +279,15 @@ function makeAccessorReader(json: GltfJson, binChunk: ArrayBuffer | null, access
     }
     const elementSize = compSize * numComponents;
     const stride = view.byteStride || elementSize;
-    const baseOffset = (view.byteOffset || 0) + (accessor.byteOffset || 0);
-    const lastElementEnd = baseOffset + (count > 0 ? (count - 1) * stride + elementSize : 0);
-    if (lastElementEnd > bufferData.byteLength) return null; // truncated/out-of-range accessor
+    const accessorByteOffset = accessor.byteOffset || 0;
+    // Validate against the bufferView's declared byteLength, NOT the whole underlying
+    // buffer — a bufferView is a sub-range grant, and an accessor reading past its
+    // bufferView's declared extent must be rejected even if the surrounding buffer
+    // happens to have more bytes physically present (matches cgltf's `data_too_short`
+    // semantics: it checks accessor-vs-bufferView, not accessor-vs-buffer).
+    const lastElementEnd = accessorByteOffset + (count > 0 ? (count - 1) * stride + elementSize : 0);
+    if (lastElementEnd > viewByteLength) return null; // accessor overruns its bufferView
+    const baseOffset = viewByteOffset + accessorByteOffset;
 
     const dv = new DataView(bufferData);
     const normalized = Boolean(accessor.normalized);
@@ -290,18 +308,22 @@ function makeAccessorReader(json: GltfJson, binChunk: ArrayBuffer | null, access
     };
 }
 
-const POSITION_COMPONENT_TYPES = new Set([COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_BYTE, COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_SHORT, COMPONENT_TYPE_UNSIGNED_SHORT]);
-// glTF core restricts TEXCOORD accessors to float or *unsigned* normalized types (no signed byte/short).
+// glTF core restricts POSITION accessors to FLOAT; non-float (quantized) POSITION is
+// only valid glTF under KHR_mesh_quantization, which — per that extension's own spec —
+// must be declared in extensionsRequired. This loader implements no extensions and
+// blanket-rejects any non-empty extensionsRequired (see `loadGlbMesh`), so a
+// quantized-POSITION code path here would be unreachable dead code for any
+// spec-compliant input; removed rather than kept-but-untested. Quantization support is
+// future work, alongside extension support generally.
+const POSITION_COMPONENT_TYPES = new Set([COMPONENT_TYPE_FLOAT]);
+// glTF core restricts TEXCOORD accessors to float or *unsigned* normalized types (no signed
+// byte/short) — this is core-spec behavior, independent of KHR_mesh_quantization.
 const TEXCOORD_COMPONENT_TYPES = new Set([COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_SHORT]);
 const INDEX_COMPONENT_TYPES = new Set([COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_SHORT, COMPONENT_TYPE_UNSIGNED_INT]);
 
 function makePositionReader(json: GltfJson, binChunk: ArrayBuffer | null, accessorIndex: number): AccessorReader | null {
     const reader = makeAccessorReader(json, binChunk, accessorIndex);
     if (!reader || !POSITION_COMPONENT_TYPES.has(reader.componentType)) return null;
-    // Quantized (non-float) positions are only meaningful normalized (KHR_mesh_quantization's
-    // "plain"/normalized case, per the port spec); raw non-normalized integer positions are
-    // an unsupported KHR_mesh_quantization variant here.
-    if (reader.componentType !== COMPONENT_TYPE_FLOAT && !json.accessors[accessorIndex].normalized) return null;
     return reader;
 }
 

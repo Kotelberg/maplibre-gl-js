@@ -292,6 +292,19 @@ describe('loadGlbMesh — glTF subset constraints', () => {
         const model = await loadGlbMesh(buildGlb(gltf)); // no BIN chunk, no embeddable data
         expect(model.valid).toBe(false);
     });
+
+    test('rejects an accessor that overruns its bufferView, even though the underlying buffer has room', async () => {
+        // count=6 VEC3 FLOAT needs 6 * 12 = 72 bytes, but the bufferView only declares 12
+        // bytes (one vertex). The BIN chunk backing it is padded well beyond 72 bytes, so a
+        // check against the whole buffer's byteLength would wrongly accept this and read
+        // past the bufferView's declared extent into neighboring bytes. A bufferView is a
+        // sub-range grant, not a hint — cgltf's `data_too_short` validates accessor-vs-view.
+        const {gltf, bin} = upwardTrianglesGltf([0, 1]); // bin is 72 bytes (6 VEC3 floats)
+        (gltf as any).bufferViews[0] = {buffer: 0, byteOffset: 0, byteLength: 12}; // only 1 vertex declared
+        const model = await loadGlbMesh(buildGlb(gltf, bin));
+        expect(model.valid).toBe(false);
+        expect(model.parts).toEqual([]);
+    });
 });
 
 describe('loadGlbMesh — uint16 part splitting', () => {
