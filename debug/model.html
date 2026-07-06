@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MapLibre GL JS model layer debug</title>
+    <meta charset='utf-8'>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <link rel='stylesheet' href='../dist/maplibre-gl.css' />
+    <style>
+        body { margin: 0; padding: 0; }
+        html, body, #map { height: 100%; }
+        #panel { position: absolute; top: 8px; left: 8px; z-index: 1; background: rgba(255,255,255,.9);
+            font: 12px/1.4 monospace; padding: 8px 10px; border-radius: 6px; }
+        button { font: 12px monospace; }
+    </style>
+</head>
+<body>
+<div id='map'></div>
+<div id='panel'>
+    <div><button id='cube'>placeholder cubes</button> <button id='house'>load house.glb</button></div>
+    <div id='status'>—</div>
+</div>
+<script src='../dist/maplibre-gl-dev.js'></script>
+<script>
+// A ring of GeoJSON points around a Kyiv coordinate, each a model instance.
+const center = [30.5241, 50.4501];
+function grid() {
+    const features = [];
+    const n = 3, step = 0.00035;
+    for (let i = -n; i <= n; i++) {
+        for (let j = -n; j <= n; j++) {
+            features.push({
+                type: 'Feature',
+                properties: {rot: ((i + j) * 25) % 360, s: 16 + ((i + n) * 2)},
+                geometry: {type: 'Point', coordinates: [center[0] + i * step, center[1] + j * step]}
+            });
+        }
+    }
+    return {type: 'FeatureCollection', features};
+}
+
+const map = new maplibregl.Map({
+    container: 'map',
+    zoom: 17.2,
+    pitch: 60,
+    bearing: 24,
+    center,
+    style: {
+        version: 8,
+        glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+        sources: {
+            models: {type: 'geojson', data: grid()}
+        },
+        layers: [
+            {id: 'bg', type: 'background', paint: {'background-color': '#cfd8dc'}},
+            {
+                id: 'houses',
+                type: 'model',
+                source: 'models',
+                layout: {'model-id': 'house'},
+                paint: {
+                    'model-scale': ['get', 's'],
+                    'model-rotation': ['get', 'rot'],
+                    'model-opacity': 1
+                }
+            }
+        ]
+    }
+});
+
+const status = document.getElementById('status');
+function refresh() {
+    status.textContent = `models: ${map.listModels().join(', ') || '(none — placeholder cubes)'}`;
+}
+
+map.on('load', () => {
+    refresh();
+    window.__mapReady = true;
+});
+
+document.getElementById('house').onclick = async () => {
+    status.textContent = 'loading house.glb…';
+    await map.addModel('house', '../test/unit/assets/house.glb');
+    refresh();
+};
+document.getElementById('cube').onclick = () => {
+    map.removeModel('house');
+    refresh();
+};
+</script>
+</body>
+</html>

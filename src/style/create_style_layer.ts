@@ -8,6 +8,7 @@ import {LineStyleLayer} from './style_layer/line_style_layer';
 import {SymbolStyleLayer} from './style_layer/symbol_style_layer';
 import {BackgroundStyleLayer} from './style_layer/background_style_layer';
 import {RasterStyleLayer} from './style_layer/raster_style_layer';
+import {ModelStyleLayer} from './style_layer/model_style_layer';
 import {CustomStyleLayer, type CustomLayerInterface} from './style_layer/custom_style_layer';
 
 import type {LayerSpecification} from '@maplibre/maplibre-gl-style-spec';
@@ -33,6 +34,8 @@ export function createStyleLayer(layer: LayerSpecification | CustomLayerInterfac
             return new HillshadeStyleLayer(layer, globalState);
         case 'line':
             return new LineStyleLayer(layer, globalState);
+        case 'model':
+            return new ModelStyleLayer(layer, globalState);
         case 'raster':
             return new RasterStyleLayer(layer, globalState);
         case 'symbol':
