@@ -2678,6 +2678,62 @@ export class Map extends Camera {
     }
 
     /**
+     * Registers a 3D glTF/GLB model under an id for use by `model` layers
+     * (experimental). A `model` layer references models by `model-id` only; the
+     * host supplies the actual asset at runtime through this registry, which is
+     * never serialized into the style — the `addImage` precedent for out-of-band
+     * binary resources.
+     *
+     * The model is loaded from either a URL (fetched through the map's request
+     * machinery) or an already-decoded GLB `ArrayBuffer`, then parsed and baked.
+     * While a model is loading (or if it fails to parse), features referencing it
+     * draw a face-colored placeholder cube. Only core glTF is supported — no
+     * Draco, meshopt, or sparse accessors.
+     *
+     * @param id - The id features resolve via their `model-id` property.
+     * @param urlOrData - A URL to a `.glb`/`.gltf` (GLB) file, or an in-memory GLB `ArrayBuffer`.
+     * @returns A promise that resolves once the model has been fetched and baked.
+     *
+     * @example
+     * ```ts
+     * await map.addModel('house', 'https://example.com/house.glb');
+     * ```
+     */
+    addModel(id: string, urlOrData: string | ArrayBuffer): Promise<void> {
+        return this.style.addModel(id, urlOrData);
+    }
+
+    /**
+     * Check whether a model with the given id is registered (experimental).
+     *
+     * @param id - The id of the model.
+     * @returns True if a model with the given id is registered.
+     */
+    hasModel(id: string): boolean {
+        return this.style.hasModel(id);
+    }
+
+    /**
+     * Removes a registered model (experimental). Features that referenced it
+     * fall back to the placeholder cube.
+     *
+     * @param id - The id of the model to remove.
+     */
+    removeModel(id: string) {
+        this.style.removeModel(id);
+        return this;
+    }
+
+    /**
+     * Returns the ids of all models currently registered via {@link Map.addModel} (experimental).
+     *
+     * @returns An array of model ids.
+     */
+    listModels(): Array<string> {
+        return this.style.listModels();
+    }
+
+    /**
      * Adds a [MapLibre style layer](https://maplibre.org/maplibre-style-spec/layers)
      * to the map's style.
      *

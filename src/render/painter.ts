@@ -30,6 +30,7 @@ import {drawRaster} from './draw_raster';
 import {drawBackground} from './draw_background';
 import {drawDebug, drawDebugPadding, selectDebugSource} from './draw_debug';
 import {drawCustom} from './draw_custom';
+import {drawModel} from './draw_model';
 import {drawDepth, drawCoords} from './draw_terrain';
 import {type OverscaledTileID} from '../tile/tile_id';
 import {drawSky, drawAtmosphere} from './draw_sky';
@@ -61,6 +62,7 @@ import {isColorReliefStyleLayer} from '../style/style_layer/color_relief_style_l
 import {isRasterStyleLayer} from '../style/style_layer/raster_style_layer';
 import {isBackgroundStyleLayer} from '../style/style_layer/background_style_layer';
 import {isCustomStyleLayer} from '../style/style_layer/custom_style_layer';
+import {isModelStyleLayer} from '../style/style_layer/model_style_layer';
 
 export type RenderPass = 'offscreen' | 'opaque' | 'translucent';
 
@@ -679,6 +681,8 @@ export class Painter {
             drawRaster(painter, tileManager, layer, coords, renderOptions);
         } else if (isBackgroundStyleLayer(layer)) {
             drawBackground(painter, tileManager, layer, coords, renderOptions);
+        } else if (isModelStyleLayer(layer)) {
+            drawModel(painter, tileManager, layer, coords, renderOptions);
         } else if (isCustomStyleLayer(layer)) {
             drawCustom(painter, tileManager, layer, renderOptions);
         }

@@ -5,6 +5,7 @@ import {createStyleLayer} from './create_style_layer';
 import {loadSprite} from './load_sprite';
 import {ImageManager} from '../render/image_manager';
 import {GlyphManager} from '../render/glyph_manager';
+import {ModelManager} from './model_manager';
 import {Light} from './light';
 import {Sky} from './sky';
 import {LineAtlas} from '../render/line_atlas';
@@ -208,6 +209,7 @@ export class Style extends Evented {
     dispatcher: Dispatcher;
     imageManager: ImageManager;
     glyphManager: GlyphManager;
+    modelManager: ModelManager;
     lineAtlas: LineAtlas;
     light: Light;
     projection: Projection | undefined;
@@ -258,6 +260,10 @@ export class Style extends Evented {
         this.imageManager.setEventedParent(this);
         const glyphLang = map._container?.lang || (typeof document !== 'undefined' && document.documentElement?.lang) || undefined;
         this.glyphManager = new GlyphManager(map._requestManager, options.localIdeographFontFamily, glyphLang);
+        this.modelManager = new ModelManager(map._requestManager, () => {
+            this._changed = true;
+            this.fire(new Event('data', {dataType: 'style'}));
+        });
         this.lineAtlas = new LineAtlas(256, 512);
         this.crossTileSymbolIndex = new CrossTileSymbolIndex();
 
@@ -991,6 +997,22 @@ export class Style extends Evented {
         this._changed = true;
         this.dispatcher.broadcast(MessageType.setImages, this._availableImages);
         this.fire(new Event('data', {dataType: 'style'}));
+    }
+
+    addModel(id: string, urlOrData: string | ArrayBuffer): Promise<void> {
+        return this.modelManager.addModel(id, urlOrData);
+    }
+
+    hasModel(id: string): boolean {
+        return this.modelManager.hasModel(id);
+    }
+
+    removeModel(id: string) {
+        this.modelManager.removeModel(id);
+    }
+
+    listModels(): Array<string> {
+        return this.modelManager.listModels();
     }
 
     listImages() {

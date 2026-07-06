@@ -6,6 +6,7 @@ import type {RequestParameters} from './ajax';
 export const enum ResourceType {
     Glyphs = 'Glyphs',
     Image = 'Image',
+    Model = 'Model',
     Source = 'Source',
     SpriteImage = 'SpriteImage',
     SpriteJSON = 'SpriteJSON',
