@@ -80,6 +80,25 @@ describe('ModelStyleLayer', () => {
         await expect(errorPromise).resolves.toBeDefined();
     });
 
+    test('is3D() is true so the layer draws in the 3D/translucent depth range', () => {
+        expect(makeLayer().is3D()).toBe(true);
+    });
+
+    test('createBucket returns an always-empty noop bucket (worker never renders model geometry)', () => {
+        const layer = makeLayer();
+        const bucket = layer.createBucket({layers: [layer]} as any);
+        expect(bucket.isEmpty()).toBe(true);
+        expect(bucket.uploadPending()).toBe(false);
+        expect(bucket.layerIds).toEqual(['m']);
+        // The noop must tolerate the full worker lifecycle without throwing.
+        expect(() => {
+            bucket.populate([] as any, {} as any, {} as any);
+            bucket.update();
+            bucket.upload({} as any);
+            bucket.destroy();
+        }).not.toThrow();
+    });
+
     test('serialize round-trips the spec properties (no runtime state leaks)', () => {
         const layer = createStyleLayer({
             id: 'buildings',
