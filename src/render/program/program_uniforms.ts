@@ -15,6 +15,7 @@ import {projectionErrorMeasurementUniforms} from './projection_error_measurement
 import {atmosphereUniforms} from './atmosphere_program';
 import {skyUniforms} from './sky_program';
 import {modelUniforms} from './model_program';
+import {modelBloomUniforms} from './model_bloom_program';
 
 const emptyUniforms = (_: any, __: any): any => {};
 
@@ -53,5 +54,6 @@ export const programUniforms = {
     projectionErrorMeasurement: projectionErrorMeasurementUniforms,
     atmosphere: atmosphereUniforms,
     sky: skyUniforms,
-    model: modelUniforms
+    model: modelUniforms,
+    modelBloom: modelBloomUniforms
 };
