@@ -71,6 +71,8 @@ import atmosphereFrag from './atmosphere.fragment.glsl.g';
 import atmosphereVert from './atmosphere.vertex.glsl.g';
 import skyFrag from './sky.fragment.glsl.g';
 import skyVert from './sky.vertex.glsl.g';
+import modelFrag from './model.fragment.glsl.g';
+import modelVert from './model.vertex.glsl.g';
 
 export type PreparedShader = {
     fragmentSource: string;
@@ -117,6 +119,7 @@ export const shaders = {
     projectionErrorMeasurement: prepare(projectionErrorMeasurementFrag, projectionErrorMeasurementVert),
     atmosphere: prepare(atmosphereFrag, atmosphereVert),
     sky: prepare(skyFrag, skyVert),
+    model: prepare(modelFrag, modelVert),
 };
 
 /** Expand #pragmas to #ifdefs, extract attributes and uniforms */
