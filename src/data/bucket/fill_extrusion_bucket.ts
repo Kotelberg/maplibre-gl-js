@@ -27,7 +27,7 @@ import type {FillExtrusionStyleLayer} from '../../style/style_layer/fill_extrusi
 import type {Context} from '../../gl/context';
 import type {IndexBuffer} from '../../gl/index_buffer';
 import type {VertexBuffer} from '../../gl/vertex_buffer';
-import type Point from '@mapbox/point-geometry';
+import Point from '@mapbox/point-geometry';
 import type {FeatureStates} from '../../source/source_state';
 import type {ImagePosition} from '../../render/image_atlas';
 import {subdividePolygon, subdivideVertexLine} from '../../render/subdivision';
@@ -169,11 +169,22 @@ export class FillExtrusionBucket implements Bucket {
     }
 
     addFeature(feature: BucketFeature, geometry: Array<Array<Point>>, index: number, canonical: CanonicalTileID, imagePositions: {[_: string]: ImagePosition}, subdivisionGranularity: SubdivisionGranularitySetting) {
+        // Edge radius (in meters) is a constant layout property read once per
+        // bucket. At the default of 0 the geometry and wall normals are left
+        // untouched, so the bucket output stays byte-identical to a build
+        // without this feature.
+        const edgeRadius = this.layers[0].layout.get('fill-extrusion-edge-radius');
+        const smoothNormals = edgeRadius > 0;
+
         for (const polygon of classifyRings(geometry, EARCUT_MAX_RINGS)) {
+            if (smoothNormals) {
+                roundPolygonCorners(polygon, canonical, edgeRadius);
+            }
+
             // Compute polygon centroid to calculate elevation in GPU
             const centroid: CentroidAccumulator = {x: 0, y: 0, sampleCount: 0};
             const oldVertexCount = this.layoutVertexArray.length;
-            this.processPolygon(centroid, canonical, feature, polygon, subdivisionGranularity);
+            this.processPolygon(centroid, canonical, feature, polygon, subdivisionGranularity, smoothNormals);
 
             const addedVertices = this.layoutVertexArray.length - oldVertexCount;
 
@@ -196,7 +207,8 @@ export class FillExtrusionBucket implements Bucket {
         canonical: CanonicalTileID,
         feature: BucketFeature,
         polygon: Array<Array<Point>>,
-        subdivisionGranularity: SubdivisionGranularitySetting
+        subdivisionGranularity: SubdivisionGranularitySetting,
+        smoothNormals: boolean
     ): void {
         if (polygon.length < 1) {
             return;
@@ -232,7 +244,7 @@ export class FillExtrusionBucket implements Bucket {
             }
 
             const subdividedRing = subdivideVertexLine(ring, granularity, isPolygon);
-            this._generateSideFaces(subdividedRing, segmentReference);
+            this._generateSideFaces(subdividedRing, segmentReference, smoothNormals);
         }
 
         // Only triangulate and draw the area of the feature if it is a polygon
@@ -259,9 +271,42 @@ export class FillExtrusionBucket implements Bucket {
     /**
      * Generates side faces for the supplied geometry. Assumes `geometry` to be a line string, like the output of {@link subdivideVertexLine}.
      * For rings, it is assumed that the first and last vertex of `geometry` are equal.
+     *
+     * When `smoothNormals` is true (edge radius above 0) each wall vertex is given a
+     * normal averaged with its neighbouring edge across gentle turns, so a
+     * rounded facade — approximated by many short edges — shades as a smooth
+     * curve instead of showing facet bands. Sharp corners (turns past the crease
+     * angle) keep their distinct edge normals. When false (the default), each
+     * wall keeps the stock faceted per-edge perpendicular and the whole
+     * smoothing pass is skipped, preserving byte-identical output.
      */
-    private _generateSideFaces(geometry: Array<Point>, segmentReference: {segment: Segment}) {
+    private _generateSideFaces(geometry: Array<Point>, segmentReference: {segment: Segment}, smoothNormals: boolean) {
         let edgeDistance = 0;
+
+        // Precompute per-edge normals only when smoothing; at radius 0 the heap
+        // allocation and normalization loop are skipped entirely and `perp` is
+        // computed inline per-edge exactly as upstream does.
+        const nEdges = geometry.length > 1 ? geometry.length - 1 : 0;
+        let edgeNrm: Array<Point> | null = null;
+        let ringClosed = false;
+        if (smoothNormals) {
+            edgeNrm = new Array(nEdges);
+            for (let e = 0; e < nEdges; e++) {
+                edgeNrm[e] = geometry[e + 1].sub(geometry[e])._perp()._unit();
+            }
+            ringClosed = geometry.length > 2 &&
+                geometry[0].x === geometry[geometry.length - 1].x &&
+                geometry[0].y === geometry[geometry.length - 1].y;
+        }
+
+        // cos(60°): blend turns up to 60°, leave sharper corners faceted.
+        const kCreaseCos = 0.5;
+        const blendNormal = (base: Point, neighbor: number, hasNeighbor: boolean): Point => {
+            if (!hasNeighbor) return base;
+            const o = edgeNrm[neighbor];
+            if (base.x * o.x + base.y * o.y > kCreaseCos) return base.add(o)._unit();
+            return base;
+        };
 
         for (let p = 1; p < geometry.length; p++) {
             const p1 = geometry[p];
@@ -275,17 +320,33 @@ export class FillExtrusionBucket implements Bucket {
                 segmentReference.segment = this.segments.prepareSegment(4, this.layoutVertexArray, this.indexArray);
             }
 
-            const perp = p1.sub(p2)._perp()._unit();
+            // Edge e runs geometry[e] -> geometry[e+1]; here p2 = geometry[e], p1 = geometry[e+1].
+            const e = p - 1;
+            const perp = smoothNormals ? edgeNrm[e] : p1.sub(p2)._perp()._unit();
+            // Smoothed normal at each endpoint (averaged with the adjacent edge
+            // across gentle turns, faceted at corners). At radius 0 both stay
+            // the stock faceted `perp`.
+            let nP1 = perp; // at geometry[e+1] = p1
+            let nP2 = perp; // at geometry[e]   = p2
+            if (smoothNormals) {
+                const prevE = (e === 0) ? nEdges - 1 : e - 1;
+                const nextE = (e + 1 >= nEdges) ? 0 : e + 1;
+                const hasPrev = (e !== 0) || ringClosed;
+                const hasNext = (e + 1 < nEdges) || ringClosed;
+                nP1 = blendNormal(perp, nextE, hasNext);
+                nP2 = blendNormal(perp, prevE, hasPrev);
+            }
+
             const dist = p2.dist(p1);
             if (edgeDistance + dist > 32768) edgeDistance = 0;
 
-            addVertex(this.layoutVertexArray, p1.x, p1.y, perp.x, perp.y, 0, 0, edgeDistance);
-            addVertex(this.layoutVertexArray, p1.x, p1.y, perp.x, perp.y, 0, 1, edgeDistance);
+            addVertex(this.layoutVertexArray, p1.x, p1.y, nP1.x, nP1.y, 0, 0, edgeDistance);
+            addVertex(this.layoutVertexArray, p1.x, p1.y, nP1.x, nP1.y, 0, 1, edgeDistance);
 
             edgeDistance += dist;
 
-            addVertex(this.layoutVertexArray, p2.x, p2.y, perp.x, perp.y, 0, 0, edgeDistance);
-            addVertex(this.layoutVertexArray, p2.x, p2.y, perp.x, perp.y, 0, 1, edgeDistance);
+            addVertex(this.layoutVertexArray, p2.x, p2.y, nP2.x, nP2.y, 0, 0, edgeDistance);
+            addVertex(this.layoutVertexArray, p2.x, p2.y, nP2.x, nP2.y, 0, 1, edgeDistance);
 
             const bottomRight = segmentReference.segment.vertexLength;
 
@@ -326,6 +387,118 @@ register('FillExtrusionBucket', FillExtrusionBucket, {omit: ['layers', 'features
 function isBoundaryEdge(p1, p2) {
     return (p1.x === p2.x && (p1.x < 0 || p1.x > EXTENT)) ||
         (p1.y === p2.y && (p1.y < 0 || p1.y > EXTENT));
+}
+
+// Rounded footprint corners (the plan-view half of fill-extrusion-edge-radius).
+// Sharp building corners are replaced by short arcs, softening silhouettes and
+// wall shading. The radius is configured in meters via the
+// fill-extrusion-edge-radius layout property and converted to tile units per
+// canonical zoom.
+const kEarthCircumference = 40075016.686;
+
+/**
+ * Rounds the corners of a single footprint ring by replacing each sharp corner
+ * with a short quadratic-bezier arc. Rings arrive closed (first === last) and
+ * the result restores that closure. Degenerate cases (triangles, near-straight
+ * corners, edges too short to support a cut) are left untouched so a large
+ * radius degrades gracefully instead of producing broken geometry.
+ */
+export function roundRingCorners(ring: Array<Point>, radiusUnits: number): Array<Point> {
+    // Rings arrive closed (first === last); operate on the open form.
+    let n = ring.length;
+    const closed = n >= 2 && ring[0].x === ring[n - 1].x && ring[0].y === ring[n - 1].y;
+    if (closed) {
+        n -= 1;
+    }
+    if (n < 4) {
+        // Triangles keep their sharpness — rounding degenerates them.
+        return ring;
+    }
+
+    const out: Array<Point> = [];
+    const push = (x: number, y: number) => {
+        out.push(new Point(Math.round(x), Math.round(y)));
+    };
+    for (let i = 0; i < n; i++) {
+        const a = ring[(i + n - 1) % n];
+        const b = ring[i];
+        const c = ring[(i + 1) % n];
+
+        const inVecX = b.x - a.x;
+        const inVecY = b.y - a.y;
+        const outVecX = c.x - b.x;
+        const outVecY = c.y - b.y;
+        const inLen = Math.sqrt(inVecX * inVecX + inVecY * inVecY);
+        const outLen = Math.sqrt(outVecX * outVecX + outVecY * outVecY);
+        if (inLen < 1e-6 || outLen < 1e-6) {
+            out.push(b);
+            continue;
+        }
+
+        // Skip near-straight corners: rounding them only adds vertices.
+        const cross = inVecX * outVecY - inVecY * outVecX;
+        const dot = inVecX * outVecX + inVecY * outVecY;
+        const turn = Math.abs(Math.atan2(cross, dot));
+        if (turn < 0.20) {
+            out.push(b);
+            continue;
+        }
+
+        // Clamp the cut so adjacent corners never overlap.
+        const cut = Math.min(radiusUnits, inLen * 0.5 - 0.5, outLen * 0.5 - 0.5);
+        if (cut < 1.0) {
+            out.push(b);
+            continue;
+        }
+
+        const inDirX = inVecX / inLen;
+        const inDirY = inVecY / inLen;
+        const outDirX = outVecX / outLen;
+        const outDirY = outVecY / outLen;
+        const startX = b.x - inDirX * cut;
+        const startY = b.y - inDirY * cut;
+        const endX = b.x + outDirX * cut;
+        const endY = b.y + outDirY * cut;
+        // Quadratic bezier (control point = the original corner) sampled at
+        // t = 1/3 and 2/3: enough segments to read round at building scale
+        // without exploding vertex counts.
+        const mid1X = startX * (4.0 / 9.0) + b.x * (4.0 / 9.0) + endX * (1.0 / 9.0);
+        const mid1Y = startY * (4.0 / 9.0) + b.y * (4.0 / 9.0) + endY * (1.0 / 9.0);
+        const mid2X = startX * (1.0 / 9.0) + b.x * (4.0 / 9.0) + endX * (4.0 / 9.0);
+        const mid2Y = startY * (1.0 / 9.0) + b.y * (4.0 / 9.0) + endY * (4.0 / 9.0);
+
+        push(startX, startY);
+        push(mid1X, mid1Y);
+        push(mid2X, mid2Y);
+        push(endX, endY);
+    }
+    if (out.length < 3) {
+        return ring;
+    }
+    // Restore closure to match the input convention.
+    if (closed) {
+        out.push(out[0].clone());
+    }
+    return out;
+}
+
+/**
+ * Rounds every ring of a classified polygon in place. The radius (meters) is
+ * converted to tile units at the tile's canonical zoom; below ~1.5 units the
+ * arc collapses to the original corner, so the whole polygon is left sharp.
+ */
+export function roundPolygonCorners(polygon: Array<Array<Point>>, canonical: CanonicalTileID, radiusM: number) {
+    // Tile units per meter at this canonical zoom (equator approximation is
+    // fine for a visual radius).
+    const tileMeters = kEarthCircumference / Math.pow(2, canonical.z);
+    const radiusUnits = radiusM * (EXTENT / tileMeters);
+    if (radiusUnits < 1.5) {
+        // Below ~1.5 units the arc collapses to the original corner.
+        return;
+    }
+    for (let i = 0; i < polygon.length; i++) {
+        polygon[i] = roundRingCorners(polygon[i], radiusUnits);
+    }
 }
 
 function isEntirelyOutside(ring) {
