@@ -5,7 +5,7 @@ import {DepthMode} from '../../gl/depth_mode';
 import {StencilMode} from '../../gl/stencil_mode';
 import {ColorMode} from '../../gl/color_mode';
 import {CullFaceMode} from '../../gl/cull_face_mode';
-import {calculateTileMatrix} from '../../geo/projection/mercator_utils';
+import {lightTileWorldMatrix, shadowPixelsPerMeter} from './shadow_frustum';
 import {shadowDepthUniformValues} from '../program/shadow_depth_program';
 
 import type {ShadowMap} from './shadow_map';
@@ -79,6 +79,10 @@ export function drawShadowCasters(
     // Write all RGBA channels of the packed depth, no blending.
     const colorMode = ColorMode.unblended;
 
+    // World-pixels-per-meter for the building HEIGHT axis (§4 / native matrixForLightTileWorld).
+    // Constant across this frame's tiles, so compute once at the live zoom before the loop.
+    const pixelsPerMeter = shadowPixelsPerMeter(transform);
+
     for (const coord of coords) {
         const tile = tileManager.getTile(coord);
         const bucket = tile?.getBucket(layer) as FillExtrusionBucket;
@@ -91,8 +95,9 @@ export function drawShadowCasters(
 
         // tile-local → light-clip = worldToLightClip · (tile-local → mercator world). The same tile
         // matrix the visible FE draw builds via getProjectionData, with only the view-projection
-        // swapped for the light matrix.
-        const tileMatrix = calculateTileMatrix(coord.toUnwrapped(), transform.worldSize);
+        // swapped for the light matrix — plus the METERS→world-px z-scale (lightTileWorldMatrix) so
+        // the caster height tracks its footprint at every zoom (world-fixed shadow length).
+        const tileMatrix = lightTileWorldMatrix(coord.toUnwrapped(), transform.worldSize, pixelsPerMeter);
         const lightTileMatrix = mat4.multiply(new Float64Array(16) as unknown as mat4, worldToLightClip, tileMatrix);
 
         program.draw(
