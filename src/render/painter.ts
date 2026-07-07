@@ -61,6 +61,7 @@ import {isColorReliefStyleLayer} from '../style/style_layer/color_relief_style_l
 import {isRasterStyleLayer} from '../style/style_layer/raster_style_layer';
 import {isBackgroundStyleLayer} from '../style/style_layer/background_style_layer';
 import {isCustomStyleLayer} from '../style/style_layer/custom_style_layer';
+import {ShadowRenderer} from './shadow/shadow_renderer';
 
 export type RenderPass = 'offscreen' | 'opaque' | 'translucent';
 
@@ -134,6 +135,12 @@ export class Painter {
     // of the terrain-facilitators. e.g. depth & coords framebuffers
     // every time the camera-matrix changes the terrain-facilitators will be redrawn.
     terrainFacilitator: {dirty: boolean; matrix: mat4; renderTime: number};
+    /**
+     * fill-extrusion cast-shadow orchestration (spec §3.1). Lazily created the first frame a style
+     * requests `light.cast-shadows`; null while shadows have never been enabled. Holds no GPU
+     * resources while inactive (default-off gate, §3.0).
+     */
+    shadowRenderer: ShadowRenderer | null;
 
     constructor(gl: WebGLRenderingContext | WebGL2RenderingContext, transform: IReadonlyTransform) {
         this.context = new Context(gl);
@@ -149,6 +156,7 @@ export class Painter {
         this.depthEpsilon = 1 / Math.pow(2, 16);
 
         this.crossTileSymbolIndex = new CrossTileSymbolIndex();
+        this.shadowRenderer = null;
     }
 
     /*
@@ -538,6 +546,20 @@ export class Painter {
             if (layer.type !== 'custom' && !coords.length) continue;
 
             this.renderLayer(this, tileManagers[layer.source], layer, coords, renderOptions);
+        }
+
+        // Shadow caster pass (offscreen) ===============================================
+        // When the scene light enables `cast-shadows`, populate the per-cascade packed-depth shadow
+        // maps from the sun's point of view now — inside the offscreen phase, before the opaque and
+        // translucent fill-extrusion receiver draws sample them (spec §3.1). Gated on the evaluated
+        // light property: with `cast-shadows` false/absent nothing is allocated, built, or drawn (the
+        // default-off gate, §3.0), and a runtime disable tears the maps down.
+        if (this.style.light && this.style.light.properties.get('cast-shadows') === true) {
+            if (!this.shadowRenderer) this.shadowRenderer = new ShadowRenderer(this.context);
+            this.shadowRenderer.beginFrame(this, layerIds, tileManagers, coordsDescending);
+        } else if (this.shadowRenderer && this.shadowRenderer.active) {
+            this.shadowRenderer.teardown();
+            this.shadowRenderer.active = false;
         }
 
         // Execute offscreen GPU tasks of the projection manager

@@ -43,6 +43,9 @@ import type {OverscaledTileID} from '../../tile/tile_id';
  * @param coords - the covering tile IDs to render (the same set the visible FE draw iterates).
  * @param worldToLightClip - world → light-clip matrix for this cascade.
  * @param shadowMap - the destination cascade's packed-depth render target.
+ * @param clearFirst - clear the map to far before drawing (spec §3.3.3). Default true. Pass false to
+ *   accumulate a second-or-later fill-extrusion layer's casters into the same cascade map without
+ *   wiping the layers already drawn this frame (the framebuffer + viewport are still bound).
  */
 export function drawShadowCasters(
     painter: Painter,
@@ -50,17 +53,21 @@ export function drawShadowCasters(
     layer: FillExtrusionStyleLayer,
     coords: Array<OverscaledTileID>,
     worldToLightClip: mat4,
-    shadowMap: ShadowMap): void {
+    shadowMap: ShadowMap,
+    clearFirst: boolean = true): void {
 
     const context = painter.context;
     const gl = context.gl;
     const transform = painter.transform;
 
     // §3.3.3: clear the packed-depth map to far-white (and depth to 1.0) at the start of every
-    // caster pass. Binds the cascade's framebuffer + viewport.
+    // caster pass. Binds the cascade's framebuffer + viewport. When accumulating a later FE layer we
+    // keep the already-drawn casters and only (re)bind the target.
     context.bindFramebuffer.set(shadowMap.framebuffer.framebuffer);
     context.viewport.set([0, 0, shadowMap.mapSize, shadowMap.mapSize]);
-    context.clear({color: Color.white, depth: 1});
+    if (clearFirst) {
+        context.clear({color: Color.white, depth: 1});
+    }
 
     // §3.3.3 caster half: depth-tested (LessEqual + write) over the map's full [0,1] depth range, so
     // the nearest-to-light packed color survives via the hardware depth test (not last-write-wins).

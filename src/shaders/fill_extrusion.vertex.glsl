@@ -84,12 +84,18 @@ void main() {
     float directional = clamp(dot(normalForLighting, u_lightpos), 0.0, 1.0);
 
 #ifdef RENDER_SHADOWS
-    // v_slope = (1 - n·L): 0 on sun-facing faces, ->1 on faces turned away. Captured HERE, from the
-    // raw clamped directional fraction, BEFORE the directional term is remapped for face shading
-    // below (native fill_extrusion_shadow.vertex.glsl:93 computes it from the same raw fraction).
-    // It scales the receiver's depth bias so a building never self-shadows its own away-faces (§3.6).
-    // Shadows are a mercator (anchor:"map") feature, so the pre-GLOBE-mix fraction is the right one.
-    v_slope = 1.0 - directional;
+    // v_slope = (1 - n·L): 0 on sun-facing faces, ->1 on faces turned away. It scales the receiver's
+    // depth bias so a building never self-shadows its own roof/away-faces (§3.6). Native computes it
+    // from `dot(normal, u_light_position_base.xyz)` where that xyz is the UNIT light DIRECTION
+    // (fill_extrusion_shadow.vertex.glsl:75,93), giving a true cosine. gl-js's stock `directional`
+    // (line 84 above) instead dots against `u_lightpos`, which is the radial-scaled light POSITION
+    // (|u_lightpos| = light.position radial, e.g. 1.15-1.5, NOT unit) — so that dot saturates to 1.0
+    // for any face within ~48deg of the sun, collapsing v_slope to 0 and zeroing the slope bias on
+    // roofs (=> self-shadow acne that no u_shadow_slope_bias can fix, since it is multiplied by 0).
+    // Normalize the light vector here so v_slope is the true cosine native intends. Kept inside the
+    // RENDER_SHADOWS variant so stock fill-extrusion shading (which deliberately uses the scaled
+    // position) is byte-unchanged. Shadows are mercator (anchor:"map"), so the pre-GLOBE fraction.
+    v_slope = 1.0 - clamp(dot(normalForLighting, normalize(u_lightpos)), 0.0, 1.0);
 #endif
 
     #ifdef GLOBE

@@ -1,0 +1,62 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "width": 256,
+      "height": 256,
+      "description": "fill-extrusion cast-shadows: a tall building casts a directional shadow onto the ground and a shorter neighbour; clean lit roofs (no self-shadow acne)."
+    }
+  },
+  "sources": {
+    "geojson": {
+      "type": "geojson",
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "properties": {"height": 80},
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[[-0.00018, -0.00018], [-0.00018, 0.00018], [0.00018, 0.00018], [0.00018, -0.00018], [-0.00018, -0.00018]]]
+            }
+          },
+          {
+            "type": "Feature",
+            "properties": {"height": 15},
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[[0.0004, 0.0004], [0.0004, 0.0008], [0.0008, 0.0008], [0.0008, 0.0004], [0.0004, 0.0004]]]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "light": {
+    "anchor": "map",
+    "position": [1.5, 210, 50],
+    "intensity": 0.5,
+    "cast-shadows": true,
+    "shadow-intensity": 0.6
+  },
+  "pitch": 55,
+  "zoom": 17,
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {"background-color": "#d7d2c8"}
+    },
+    {
+      "id": "extrusion",
+      "type": "fill-extrusion",
+      "source": "geojson",
+      "paint": {
+        "fill-extrusion-color": "#c8b89a",
+        "fill-extrusion-height": ["get", "height"],
+        "fill-extrusion-opacity": 1.0
+      }
+    }
+  ]
+}
