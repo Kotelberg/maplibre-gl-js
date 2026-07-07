@@ -12,3 +12,4 @@
 
 *.gltf text eol=lf
 *.bin binary
+*.glb binary

@@ -656,6 +656,13 @@ async function getImageFromStyle(styleForTest: StyleWithTestData, page: Page): P
                         map.addImage(operation[1], image, operation[3] || {});
                         break;
                     }
+                    case 'addModel': {
+                        const response = await fetch(`http://localhost:2900/${operation[2]}`);
+                        const buffer = await response.arrayBuffer();
+                        await map.addModel(operation[1], buffer);
+                        map._render();
+                        break;
+                    }
                     case 'addCustomLayer':
                         map.addLayer(new customLayerImplementations[operation[1]](), operation[2]);
                         map._render();
