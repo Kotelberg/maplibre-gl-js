@@ -87,9 +87,15 @@ function buildMesh(context: Context, vertices: ModelLayoutArray, indices: Triang
 
 /**
  * Bake the placements into GPU-ready grouped geometry. Instances whose
- * `model-id` resolves to a loaded, valid mesh are grouped by model; every other
- * instance (unregistered id, still loading, or failed parse) draws the
- * face-colored placeholder cube — a visible "asset not loaded" signal.
+ * `model-id` resolves to a loaded, valid mesh are grouped by model. Of the
+ * rest: an instance whose model is still loading is dropped from this frame's
+ * geometry entirely (native's synchronous disk load never has this window, so
+ * drawing anything here would be a web-only flash); an instance whose id is
+ * unresolvable — parse failed, or the id was never registered — draws the
+ * face-colored placeholder cube, a visible "asset not loaded" signal. A
+ * repaint is already guaranteed once a pending load settles: `ModelManager`
+ * bumps its version and fires a style `data` event on every state change,
+ * which `ensureGeometry` (draw_model.ts) treats as a rebuild trigger.
  *
  * Per-instance transform is baked into the vertices in ground meters relative to
  * the group anchor (`translate` * `rotate_z(model-rotation)` *
@@ -102,7 +108,8 @@ export function buildModelGeometry(
     instances: PlacedInstance[],
     modelManager: ModelManager
 ): BuiltModels {
-    // Group by resolved mesh; unresolved → face-colored placeholder cube.
+    // Group by resolved mesh; unresolvable → face-colored placeholder cube;
+    // still loading → dropped from this frame (see function doc above).
     const placeholderCube = buildPlaceholderCube();
     const placeholderModel: BakedModel = {
         valid: true,
@@ -119,14 +126,20 @@ export function buildModelGeometry(
     const byModel = new Map<string, {model: BakedModel; placeholder: boolean; instances: PlacedInstance[]}>();
     const cubes: PlacedInstance[] = [];
     for (const inst of instances) {
-        const mesh = inst.modelId ? modelManager.getModel(inst.modelId) : null;
+        const modelId = inst.modelId;
+        const mesh = modelId ? modelManager.getModel(modelId) : null;
         if (mesh && mesh.valid && mesh.parts.length > 0) {
-            let group = byModel.get(inst.modelId);
+            let group = byModel.get(modelId);
             if (!group) {
                 group = {model: mesh, placeholder: false, instances: []};
-                byModel.set(inst.modelId, group);
+                byModel.set(modelId, group);
             }
             group.instances.push(inst);
+        } else if (modelId && modelManager.getStatus(modelId) === 'loading') {
+            // Still loading: skip the feature this frame rather than flashing
+            // the placeholder. `ensureGeometry` rebuilds automatically once the
+            // load settles (registry version bump -> style 'data' event).
+            continue;
         } else {
             cubes.push(inst);
         }

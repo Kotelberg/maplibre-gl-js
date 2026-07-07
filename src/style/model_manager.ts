@@ -21,10 +21,15 @@ type ModelEntry = {
  * style — round-tripping a `model` layer carries no model bytes or paths.
  *
  * URL loading is async (an improvement over native's synchronous disk parse):
- * the mesh resolves through gl-js's existing request stack. While an id is
- * loading (or has failed), `getModel` returns null and the render layer draws
- * the placeholder cube. `version` bumps on every state change so the render
- * layer knows to re-bake once a mesh finishes loading.
+ * the mesh resolves through gl-js's existing request stack. `getModel` returns
+ * null for any id that isn't a loaded, valid mesh (still loading, failed, or
+ * never registered) — callers needing to tell those apart use `getStatus`.
+ * The render layer draws nothing for a feature whose model is still loading
+ * (native has no such window, so drawing the placeholder there would be a
+ * web-only flash) and falls back to the placeholder cube only once the id is
+ * known to be unresolvable (`'error'` or unregistered). `version` bumps on
+ * every state change so the render layer knows to re-bake once a mesh
+ * finishes loading (or fails).
  */
 export class ModelManager {
     _models: {[id: string]: ModelEntry};
@@ -48,6 +53,19 @@ export class ModelManager {
     getModel(id: string): BakedModel | null {
         const entry = this._models[id];
         return entry && entry.status === 'loaded' ? entry.model : null;
+    }
+
+    /**
+     * Resolution state for `id`: `'loading'`/`'loaded'`/`'error'` mirror the
+     * registry entry; `'missing'` means the id was never registered (or was
+     * removed). The render layer uses this to distinguish "still loading"
+     * (draw nothing this frame) from "unresolvable" (`'error'` or `'missing'`,
+     * draw the placeholder cube) — `getModel` alone can't tell those apart
+     * since it returns null for all three.
+     */
+    getStatus(id: string): ModelStatus | 'missing' {
+        const entry = this._models[id];
+        return entry ? entry.status : 'missing';
     }
 
     listModels(): Array<string> {
