@@ -180,4 +180,52 @@ describe('fill-extrusion cast-shadows — zoom-oscillation regression (spec §3.
         // (d) No console/shader errors surfaced during the sweep (guards the RENDER_SHADOWS variant compile/link).
         expect(pageErrors, `no page/console errors during the shadow sweep:\n${pageErrors.join('\n')}`).toEqual([]);
     });
+
+    // Spec §3.11 height-ramp refit (native branch d3/height-ramp-refit). The sticky shadow cache renders
+    // casters only on refit frames, baking that frame's fill-extrusion-height. With a zoom-interpolated
+    // height (the z14→15 grow-in ramp) the incidental refit cadence leaves the depth map holding a
+    // DIFFERENT zoom's building heights on cache-hit frames — shadows drift out of sync with the growing
+    // buildings. `FillExtrusionStyleLayer.shadowCasterHeightVariesBetween` forces a per-frame refit while
+    // the live zoom differs from the cached one, so the caster always extrudes to the live height (zero
+    // lag). This drives a zoom sweep through the ramp and asserts the fix holds cachedZoom == liveZoom on
+    // every settled frame — and that it stays a strict no-op for a zoom-constant `['get','height']`
+    // (the sticky cache is preserved, so at least one frame is a lagging cache hit).
+    async function maxCasterZoomLagOverSweep(): Promise<number> {
+        let maxLag = 0;
+        // Descend in small steps THROUGH the [14,15] ramp; each step is small enough that a
+        // zoom-constant caster's sticky cache would incidentally hit (a nonzero lag), isolating the
+        // ramp predicate as the only thing that can drive the lag to exactly zero.
+        for (let z = 15.1; z >= 14.1; z -= 0.1) {
+            await settleAt(Number(z.toFixed(2)));
+            const lag = await page.evaluate(() => {
+                const fs = (map as any).painter.shadowRenderer.frustumState;
+                return Math.abs(map.getZoom() - fs.cachedZoom);
+            });
+            maxLag = Math.max(maxLag, lag);
+        }
+        return maxLag;
+    }
+
+    test('a zoom-interpolated height forces per-frame caster refits through the ramp (zero lag); a zoom-constant height keeps the sticky cache', {timeout: 120000}, async () => {
+        const shadowsActive = await page.evaluate(() => Boolean((map as any).painter?.shadowRenderer?.active));
+        expect(shadowsActive, 'shadow renderer must be active').toBe(true);
+
+        // Control: the fixture's zoom-constant `['get','height']`. The fix must NOT force refits — the
+        // sticky cache lags the live zoom on at least one settled cache-hit frame through the sweep.
+        const constantLag = await maxCasterZoomLagOverSweep();
+        expect(constantLag, 'zoom-constant height must keep the sticky cache (a lagging cache hit occurs)').toBeGreaterThan(0);
+
+        // The z14→15 grow-in ramp. Now the caster geometry is zoom-dependent, so the fix must force a
+        // refit on every frame where the live zoom differs from the cached one → the caster always
+        // extrudes to the live height → zero lag through the whole ramp.
+        await page.evaluate(() => {
+            map.setPaintProperty('buildings-3d', 'fill-extrusion-height',
+                ['interpolate', ['linear'], ['zoom'], 14, 0, 15, ['get', 'height']] as any);
+        });
+        await page.evaluate(() => { return new Promise<void>((resolve) => map.once('idle', () => resolve())); });
+        const rampLag = await maxCasterZoomLagOverSweep();
+        expect(rampLag, 'zoom-interpolated height must refit every frame (caster tracks live height, zero lag)').toBe(0);
+
+        expect(pageErrors, `no page/console errors during the ramp sweep:\n${pageErrors.join('\n')}`).toEqual([]);
+    });
 });

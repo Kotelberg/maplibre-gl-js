@@ -38,6 +38,49 @@ export class FillExtrusionStyleLayer extends StyleLayer {
         return true;
     }
 
+    /**
+     * Whether this layer's shadow-CASTER geometry (`fill-extrusion-height` / `fill-extrusion-base`)
+     * extrudes to a DIFFERENT shape at `zoomA` vs `zoomB`. The sticky shadow cache (`refreshShadowFrustum`
+     * in `render/shadow/shadow_cache`) assumes caster geometry depends only on world position, so a
+     * fitted shadow map stays valid across pan/rotate/pitch and only re-renders casters on a refit. A
+     * zoom-interpolated height (the common z14→15 grow-in ramp) violates that: on a cache-hit frame the
+     * depth map still holds the last refit frame's building heights, so while the camera zooms through
+     * the ramp the live (growing) buildings render against stale (differently-sized) caster depths —
+     * shadows do not grow with the buildings. The shadow orchestration (`ShadowRenderer` in
+     * `render/shadow/shadow_renderer`) uses this to force a caster refit whenever the cached shadow
+     * map's zoom no longer matches the live heights.
+     *
+     * Verbatim port of native `RenderFillExtrusionLayer::shadowCasterHeightVariesBetween`
+     * (`render_fill_extrusion_layer.cpp`, branch `d3/height-ramp-refit`). Returns `false` when both
+     * height and base are zoom-constant (a plain constant OR a data-driven-but-zoom-constant value like
+     * `['get','height']`) — so those styles keep the full sticky-cache benefit at zero added refits.
+     * A camera (zoom-only) curve is compared by evaluating both zooms, so it no-ops OUTSIDE the ramp
+     * (heights clamp to a constant there). A composite (zoom-AND-data) curve can't be evaluated without
+     * a feature, so any zoom change is treated as a variation (conservative — still correct).
+     */
+    shadowCasterHeightVariesBetween(zoomA: number, zoomB: number): boolean {
+        if (zoomA === zoomB) return false;
+        const varies = (propertyName: 'fill-extrusion-height' | 'fill-extrusion-base'): boolean => {
+            const expression = this._transitionablePaint._values[propertyName].value.expression;
+            switch (expression.kind) {
+                case 'constant':
+                case 'source':
+                    // Zoom-constant: a plain literal, or a data-driven value that does not depend on
+                    // zoom (`['get','height']`). Caster geometry is world-fixed → cache stays sticky.
+                    return false;
+                case 'composite':
+                    // Zoom-AND-feature dependent: can't evaluate a single height without a feature, so
+                    // treat any zoom change as a variation (conservative).
+                    return true;
+                case 'camera':
+                    // Zoom-only curve: evaluate at both zooms. Clamps to the endpoints outside the
+                    // interpolation stops, so this is exactly 0 outside the ramp (no forced refit).
+                    return Math.abs(expression.evaluate({zoom: zoomA}) - expression.evaluate({zoom: zoomB})) > 1e-3;
+            }
+        };
+        return varies('fill-extrusion-height') || varies('fill-extrusion-base');
+    }
+
     queryIntersectsFeature({
         queryGeometry,
         feature,

@@ -24,6 +24,9 @@
     <div><button id='toggle'>shadows: ON</button>
          <button id='rot'>rotate +30°</button>
          <button id='pitchBtn'>pitch 55/0</button></div>
+    <div><button id='rampBtn'>height: DATA</button>
+         <button id='refitBtn'>ramp-refit: ON</button>
+         <button id='rampZoom'>ramp z13.5↔15.5</button></div>
     <div><label>intensity</label><input id='intensity' type='range' min='0' max='1' step='0.02' value='0.5'> <span id='intensityV'>0.50</span></div>
     <div><label>sun azimuth</label><input id='azimuth' type='range' min='0' max='360' step='5' value='210'> <span id='azimuthV'>210</span></div>
     <div><label>sun polar</label><input id='polar' type='range' min='0' max='90' step='2' value='45'> <span id='polarV'>45</span></div>
@@ -143,6 +146,36 @@ function setLightFromControls() {
 for (const id of ['azimuth', 'polar', 'intensity']) {
     document.getElementById(id).oninput = setLightFromControls;
 }
+// --- §3.11 height-ramp harness ---------------------------------------------------------------
+// DATA height (`['get','height']`) is zoom-constant: buildings are full height at every zoom.
+// RAMP height interpolates 0 → full across z14→z15 (the "grow-in" ramp), so the caster geometry is
+// zoom-DEPENDENT and the sticky shadow cache must force per-frame refits through the band, else the
+// shadows render against the last refit frame's stale heights.
+const DATA_HEIGHT = ['get', 'height'];
+const RAMP_HEIGHT = ['interpolate', ['linear'], ['zoom'], 14, 0, 15, ['get', 'height']];
+let rampOn = false;
+document.getElementById('rampBtn').onclick = () => {
+    rampOn = !rampOn;
+    map.setPaintProperty('buildings-3d', 'fill-extrusion-height', rampOn ? RAMP_HEIGHT : DATA_HEIGHT);
+    document.getElementById('rampBtn').textContent = 'height: ' + (rampOn ? 'RAMP' : 'DATA');
+    updateHud();
+};
+// A/B escape hatch: OFF reproduces the defect (sticky cache NOT force-refit through the ramp).
+let refitOn = true;
+document.getElementById('refitBtn').onclick = () => {
+    refitOn = !refitOn;
+    if (map.painter.shadowRenderer) map.painter.shadowRenderer.heightRampRefitDisabled = !refitOn;
+    document.getElementById('refitBtn').textContent = 'ramp-refit: ' + (refitOn ? 'ON' : 'OFF');
+    updateHud();
+};
+// Keep the escape-hatch applied even after the renderer is (re)created on a later frame.
+map.on('render', () => {
+    if (map.painter.shadowRenderer) map.painter.shadowRenderer.heightRampRefitDisabled = !refitOn;
+});
+document.getElementById('rampZoom').onclick = () => {
+    const z = map.getZoom();
+    map.easeTo({zoom: z < 14.5 ? 15.5 : 13.5, duration: 3000});
+};
 window._map = map;
 </script>
 </body>
