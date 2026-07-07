@@ -4,7 +4,7 @@ import {DepthMode} from '../../gl/depth_mode';
 import {StencilMode} from '../../gl/stencil_mode';
 import {ColorMode} from '../../gl/color_mode';
 import {CullFaceMode} from '../../gl/cull_face_mode';
-import {calculateTileMatrix} from '../../geo/projection/mercator_utils';
+import {lightTileWorldMatrix, shadowPixelsPerMeter} from './shadow_frustum';
 import {groundShadowUniformValues} from '../program/ground_shadow_program';
 
 import type {ShadowMap} from './shadow_map';
@@ -82,10 +82,14 @@ export function drawGroundShadow(
 
     const program = painter.useProgram('groundShadow', null, /* forceSimpleProjection */ true);
     const texelSize = params.shadowMaps[0].texelSize;
+    // Same METERS→world-px z-scale the caster/FE receiver use (native matrixForLightTileWorld). The
+    // ground quad is flat (z=0) so the z term is inert here, but sharing the exact tile matrix keeps
+    // the ground receiver byte-consistent with the caster's world transform.
+    const pixelsPerMeter = shadowPixelsPerMeter(transform);
 
     for (const coord of coords) {
         // Per-cascade per-tile `tile-local -> light-clip`, flattened into a single mat4[cascadeCount].
-        const tileMatrix = calculateTileMatrix(coord.toUnwrapped(), transform.worldSize);
+        const tileMatrix = lightTileWorldMatrix(coord.toUnwrapped(), transform.worldSize, pixelsPerMeter);
         const lightMatrices = new Float32Array(16 * cascadeCount);
         const scratch = new Float64Array(16) as unknown as mat4;
         for (let c = 0; c < cascadeCount; c++) {

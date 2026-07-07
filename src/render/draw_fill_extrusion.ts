@@ -9,7 +9,7 @@ import {
     fillExtrusionPatternUniformValues,
     fillExtrusionShadowUniformValues,
 } from './program/fill_extrusion_program';
-import {calculateTileMatrix} from '../geo/projection/mercator_utils';
+import {lightTileWorldMatrix, shadowPixelsPerMeter} from './shadow/shadow_frustum';
 
 import type {Painter, RenderOptions} from './painter';
 import type {TileManager} from '../tile/tile_manager';
@@ -89,6 +89,10 @@ function drawExtrusionTiles(
     // stock program). Terrain is the documented unsupported config (the caster carries no centroid
     // elevation), so the receiver stays off under 3D terrain too.
     const useShadowReceiver = !!shadowFrame && !image && !painter.style.map.terrain;
+    // World-pixels-per-meter for the receiver's building HEIGHT axis (§4 / native
+    // matrixForLightTileWorld): constant across this frame's tiles, computed once at the live zoom so
+    // the receiver samples the shadow map at the SAME z-scaled world position the caster wrote depth.
+    const shadowPixelsPerMeterValue = useShadowReceiver ? shadowPixelsPerMeter(transform) : 0;
     if (useShadowReceiver) {
         // Bind the cascade maps NEAREST/CLAMP to their sampler units (spec §3.3.2) before the draws.
         for (let c = 0; c < shadowFrame.cascadeCount && c < 4; c++) {
@@ -129,7 +133,7 @@ function drawExtrusionTiles(
             uniformValues = fillExtrusionPatternUniformValues(painter, shouldUseVerticalGradient, opacity, translate, coord, crossfade, tile);
         } else if (useShadowReceiver) {
             uniformValues = fillExtrusionShadowUniformValues(painter, shouldUseVerticalGradient, opacity, translate, {
-                lightMatrices: composeTileLightMatrices(coord, transform.worldSize, shadowFrame.cascades),
+                lightMatrices: composeTileLightMatrices(coord, transform.worldSize, shadowPixelsPerMeterValue, shadowFrame.cascades),
                 cascadeCount: shadowFrame.cascadeCount,
                 intensity: shadowFrame.intensity,
                 texelSize: shadowFrame.texelSize,
@@ -150,13 +154,14 @@ function drawExtrusionTiles(
 
 /**
  * Per-cascade per-tile `tile-local → light-clip` matrices, flattened into a single `Float32Array` of
- * `16 * cascadeCount` for `u_light_matrix[4]`. Each is `worldToLightClip[c] · calculateTileMatrix(coord)`
- * — the SAME tile matrix the caster and the visible FE draw use, so the receiver samples exactly where
- * the caster wrote depth (spec §3.1).
+ * `16 * cascadeCount` for `u_light_matrix[4]`. Each is `worldToLightClip[c] · lightTileWorldMatrix(coord)`
+ * — the SAME z-scaled tile matrix the caster uses, so the receiver samples exactly where the caster
+ * wrote depth (spec §3.1). The z-scale (METERS→world-px) MUST match the caster or the roof/wall
+ * receiver would sample the wrong shadow-map location.
  */
-function composeTileLightMatrices(coord: OverscaledTileID, worldSize: number, cascades: mat4[]): Float32Array {
+function composeTileLightMatrices(coord: OverscaledTileID, worldSize: number, pixelsPerMeter: number, cascades: mat4[]): Float32Array {
     const cascadeCount = cascades.length;
-    const tileMatrix = calculateTileMatrix(coord.toUnwrapped(), worldSize);
+    const tileMatrix = lightTileWorldMatrix(coord.toUnwrapped(), worldSize, pixelsPerMeter);
     const out = new Float32Array(16 * cascadeCount);
     const scratch = new Float64Array(16) as unknown as mat4;
     for (let c = 0; c < cascadeCount; c++) {

@@ -1,8 +1,10 @@
 import {mat4, vec4} from 'gl-matrix';
 import Point from '@mapbox/point-geometry';
 import {mercatorZfromAltitude} from '../../geo/mercator_coordinate';
+import {calculateTileMatrix} from '../../geo/projection/mercator_utils';
 
 import type {PaddingOptions} from '../../geo/edge_insets';
+import type {UnwrappedTileIDType} from '../../geo/transform_helper';
 
 /**
  * The subset of the transform the shadow frustum fit reads. Satisfied by `IReadonlyTransform`
@@ -55,6 +57,34 @@ function cross(a: Vec3, b: Vec3): Vec3 {
  */
 export function shadowPixelsPerMeter(transform: ShadowTransformLike): number {
     return mercatorZfromAltitude(1, transform.center.lat) * transform.worldSize;
+}
+
+/**
+ * Tile-local (EXTENT units, z in METERS) → mercator world-pixel matrix for the shadow caster and
+ * receivers. Direct port of native `matrixForLightTileWorld` (`shadow_tweakers.cpp:82-93`).
+ *
+ * `calculateTileMatrix` maps x/y from EXTENT units into world-pixels (scaling with zoom via
+ * `worldSize`) but leaves **z at unit scale** — yet the fill-extrusion height vertex fed to the
+ * caster/receiver is in **METERS**. Scaling z by `shadowPixelsPerMeter` puts the building HEIGHT into
+ * the same world-pixel space as its FOOTPRINT, so the cast-shadow length is world-fixed
+ * (height·tan(sun) in world space, independent of camera zoom) instead of shrinking as you zoom in.
+ * Both footprint (x/y) and height (z) then scale TOGETHER with zoom, and the sticky cache's uniform
+ * `1/liveS` rescale (`shadow_cache.ts`) keeps them consistent on cache-hit frames.
+ *
+ * Evaluated at the LIVE zoom every frame (matching native's per-frame `pixelsPerMeter(state)`), the
+ * `pixelsPerMeter` argument is constant across a frame's tiles, so callers compute it once via
+ * {@link shadowPixelsPerMeter} and pass it in.
+ */
+export function lightTileWorldMatrix(
+    unwrappedTileID: UnwrappedTileIDType,
+    worldSize: number,
+    pixelsPerMeter: number
+): mat4 {
+    const m = calculateTileMatrix(unwrappedTileID, worldSize);
+    // matrixFor gives x/y in world-pixels (scale with zoom) but leaves z at unit scale; the FE height
+    // vertex is in METERS, so scale z by world-pixels-per-meter to match the footprint (native #2).
+    mat4.scale(m, m, [1, 1, pixelsPerMeter]);
+    return m;
 }
 
 /**
