@@ -1,0 +1,11 @@
+{
+  "version": 8,
+  "metadata": {"test": {"height": 256, "width": 256, "timeout": 120000, "operations": [["wait", 800]]}},
+  "zoom": 16.6, "pitch": 50, "bearing": 20, "center": [10.0, 40.0],
+  "sources": {"models": {"type": "geojson", "data": {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"rot": 290, "s": 14}, "geometry": {"type": "Point", "coordinates": [9.99955, 39.99955]}}, {"type": "Feature", "properties": {"rot": 325, "s": 14}, "geometry": {"type": "Point", "coordinates": [9.99955, 40.0]}}, {"type": "Feature", "properties": {"rot": 0, "s": 14}, "geometry": {"type": "Point", "coordinates": [9.99955, 40.00045]}}, {"type": "Feature", "properties": {"rot": 325, "s": 14}, "geometry": {"type": "Point", "coordinates": [10.0, 39.99955]}}, {"type": "Feature", "properties": {"rot": 0, "s": 14}, "geometry": {"type": "Point", "coordinates": [10.0, 40.0]}}, {"type": "Feature", "properties": {"rot": 35, "s": 14}, "geometry": {"type": "Point", "coordinates": [10.0, 40.00045]}}, {"type": "Feature", "properties": {"rot": 0, "s": 14}, "geometry": {"type": "Point", "coordinates": [10.00045, 39.99955]}}, {"type": "Feature", "properties": {"rot": 35, "s": 14}, "geometry": {"type": "Point", "coordinates": [10.00045, 40.0]}}, {"type": "Feature", "properties": {"rot": 70, "s": 14}, "geometry": {"type": "Point", "coordinates": [10.00045, 40.00045]}}]}}},
+  "layers": [
+    {"id": "bg", "type": "background", "paint": {"background-color": "#cfd8dc"}},
+    {"id": "models", "type": "model", "source": "models", "layout": {"model-id": "unregistered"},
+     "paint": {"model-scale": ["get", "s"], "model-rotation": ["get", "rot"]}}
+  ]
+}
