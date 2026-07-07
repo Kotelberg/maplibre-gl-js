@@ -81,7 +81,7 @@ function buildMesh(context: Context, vertices: ModelLayoutArray, indices: Triang
     return new Mesh(
         context.createVertexBuffer(vertices, modelAttributes.members),
         context.createIndexBuffer(indices),
-        SegmentVector.simpleSegment(0, 0, vertices.length, indices.length / 3)
+        SegmentVector.simpleSegment(0, 0, vertices.length, indices.length)
     );
 }
 
