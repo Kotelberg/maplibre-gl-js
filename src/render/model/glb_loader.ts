@@ -142,6 +142,20 @@ const COMPONENT_TYPE_UNSIGNED_SHORT = 5123;
 const COMPONENT_TYPE_UNSIGNED_INT = 5125;
 const COMPONENT_TYPE_FLOAT = 5126;
 
+/**
+ * glTF `extensionsRequired` values this loader can honor. KHR_mesh_quantization is the
+ * only one, and it is honored rather than rejected because it merely changes how vertex
+ * attributes are *encoded* (quantized integer POSITION/NORMAL/TEXCOORD accessors) — the
+ * generic accessor reader already decodes those (normalized integers via
+ * `normalizeComponent`; non-normalized integers reconstructed by the node's
+ * scale/translation). This matches native, whose cgltf reader dequantizes any accessor
+ * and never gates on `extensionsRequired` at all. Compression extensions
+ * (KHR_draco_mesh_compression, EXT_meshopt_compression) are deliberately absent: they
+ * re-encode the buffer bytes themselves, which this loader cannot decode, so a file
+ * requiring them is still (correctly) rejected.
+ */
+const SUPPORTED_REQUIRED_EXTENSIONS = new Set<string>(['KHR_mesh_quantization']);
+
 const NUM_COMPONENTS: Record<string, number> = {
     SCALAR: 1,
     VEC2: 2,
@@ -181,16 +195,17 @@ function readRawComponent(dv: DataView, byteOffset: number, componentType: numbe
     }
 }
 
-// glTF 2.0 §3.9.4 normalized-integer dequantization. Core (extension-free) glTF only
-// allows this for *unsigned* component types (TEXCOORD_0/COLOR_0/WEIGHTS_0 accessors
-// with `normalized: true` UNSIGNED_BYTE/UNSIGNED_SHORT) — the signed BYTE/SHORT cases
-// exist in the spec's dequantization formula but are only reachable via
-// KHR_mesh_quantization-relaxed POSITION/NORMAL/TANGENT accessors, which this loader
-// does not support (removed as dead code — see `makePositionReader` below; quantization
-// support is future work alongside extension support generally).
+// glTF 2.0 §3.9.4 normalized-integer dequantization — the exact formula cgltf's
+// `cgltf_component_read_float` applies. Signed types clamp at −1 (the −128/−32768
+// endpoint maps to −1). The signed BYTE/SHORT cases are reachable via
+// KHR_mesh_quantization-relaxed POSITION/NORMAL/TEXCOORD accessors (which this loader
+// now honors — see the extension gate in `loadGlbMesh` and `POSITION_COMPONENT_TYPES`);
+// the unsigned cases are core-spec normalized TEXCOORD_0/COLOR_0 accessors.
 function normalizeComponent(raw: number, componentType: number): number {
     switch (componentType) {
+        case COMPONENT_TYPE_BYTE: return Math.max(raw / 127, -1);
         case COMPONENT_TYPE_UNSIGNED_BYTE: return raw / 255;
+        case COMPONENT_TYPE_SHORT: return Math.max(raw / 32767, -1);
         case COMPONENT_TYPE_UNSIGNED_SHORT: return raw / 65535;
         default: return raw;
     }
@@ -308,17 +323,26 @@ function makeAccessorReader(json: GltfJson, binChunk: ArrayBuffer | null, access
     };
 }
 
-// glTF core restricts POSITION accessors to FLOAT; non-float (quantized) POSITION is
-// only valid glTF under KHR_mesh_quantization, which — per that extension's own spec —
-// must be declared in extensionsRequired. This loader implements no extensions and
-// blanket-rejects any non-empty extensionsRequired (see `loadGlbMesh`), so a
-// quantized-POSITION code path here would be unreachable dead code for any
-// spec-compliant input; removed rather than kept-but-untested. Quantization support is
-// future work, alongside extension support generally.
-const POSITION_COMPONENT_TYPES = new Set([COMPONENT_TYPE_FLOAT]);
-// glTF core restricts TEXCOORD accessors to float or *unsigned* normalized types (no signed
-// byte/short) — this is core-spec behavior, independent of KHR_mesh_quantization.
-const TEXCOORD_COMPONENT_TYPES = new Set([COMPONENT_TYPE_FLOAT, COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_SHORT]);
+// glTF core restricts POSITION accessors to FLOAT; KHR_mesh_quantization additionally
+// permits (un)signed BYTE and SHORT — exactly the component types cgltf's accessor reader
+// dequantizes transparently. This loader honors KHR_mesh_quantization (see the extension
+// gate in `loadGlbMesh`) because it is a pure vertex-attribute *encoding* the generic
+// accessor reader already decodes: normalized integers via `normalizeComponent`,
+// non-normalized integers as raw values that the node's dequantization scale/translation
+// reconstructs into world units. Real-world exports (e.g. glTF-Transform output) ship
+// quantized POSITION routinely, so this is a common case, not an edge case.
+const POSITION_COMPONENT_TYPES = new Set([
+    COMPONENT_TYPE_BYTE, COMPONENT_TYPE_UNSIGNED_BYTE,
+    COMPONENT_TYPE_SHORT, COMPONENT_TYPE_UNSIGNED_SHORT,
+    COMPONENT_TYPE_FLOAT,
+]);
+// glTF core allows TEXCOORD accessors as float or *unsigned* normalized byte/short;
+// KHR_mesh_quantization additionally permits (normalized) signed byte/short.
+const TEXCOORD_COMPONENT_TYPES = new Set([
+    COMPONENT_TYPE_FLOAT,
+    COMPONENT_TYPE_BYTE, COMPONENT_TYPE_UNSIGNED_BYTE,
+    COMPONENT_TYPE_SHORT, COMPONENT_TYPE_UNSIGNED_SHORT,
+]);
 const INDEX_COMPONENT_TYPES = new Set([COMPONENT_TYPE_UNSIGNED_BYTE, COMPONENT_TYPE_UNSIGNED_SHORT, COMPONENT_TYPE_UNSIGNED_INT]);
 
 function makePositionReader(json: GltfJson, binChunk: ArrayBuffer | null, accessorIndex: number): AccessorReader | null {
@@ -508,11 +532,18 @@ export async function loadGlbMesh(buffer: ArrayBuffer): Promise<BakedModel> {
         if (!parsed) return invalidModel();
         const {json, binChunk} = parsed;
 
-        // Honest, conservative extension gate: this loader implements no glTF
-        // extensions at all (no Draco, no meshopt, no palette/sparse accessors —
-        // see the port spec), so ANY required extension cannot be honored.
-        if (Array.isArray(json.extensionsRequired) && json.extensionsRequired.length > 0) {
-            return invalidModel();
+        // Extension gate. This loader honors exactly the required extensions in
+        // `SUPPORTED_REQUIRED_EXTENSIONS` (currently just KHR_mesh_quantization — a pure
+        // vertex-attribute encoding the generic accessor reader decodes transparently,
+        // exactly as native's cgltf does). ANY other required extension (Draco, meshopt,
+        // …) re-encodes buffer bytes in a way this loader cannot decode, so the model is
+        // rejected and the caller falls back to the placeholder cube. `extensionsUsed`
+        // (as opposed to -Required) is ignored — merely-declared, non-load-critical
+        // extensions must never block a load.
+        if (Array.isArray(json.extensionsRequired)) {
+            for (const ext of json.extensionsRequired) {
+                if (!SUPPORTED_REQUIRED_EXTENSIONS.has(ext)) return invalidModel();
+            }
         }
 
         const nodes: GltfJson[] = json.nodes || [];
