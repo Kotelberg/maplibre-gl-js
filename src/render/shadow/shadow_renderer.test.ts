@@ -39,14 +39,19 @@ function makeTransform(zoom: number): MercatorTransform {
     return t;
 }
 
-/** A minimal fake fill-extrusion layer + tile carrying a bucket. */
-function feLayer(id: string, hasBucket = true) {
+/**
+ * A minimal fake fill-extrusion layer + tile carrying a bucket. `heightVaries` models the §3.11
+ * height-ramp predicate ({@link FillExtrusionStyleLayer.shadowCasterHeightVariesBetween}); it defaults
+ * to `() => false` (the common zoom-constant caster — cache stays sticky).
+ */
+function feLayer(id: string, hasBucket = true, heightVaries: (a: number, b: number) => boolean = () => false) {
     return {
         id,
         type: 'fill-extrusion',
         source: id,
         isHidden: () => false,
         paint: {get: (k: string) => (k === 'fill-extrusion-opacity' ? 1 : undefined)},
+        shadowCasterHeightVariesBetween: heightVaries,
         _hasBucket: hasBucket
     };
 }
@@ -186,6 +191,52 @@ describe('ShadowRenderer sticky cache (site 1) — no re-render on a settled fra
         coords['a'] = [{key: 'a-t0'}, {key: 'a-t1'}];
         r.beginFrame(painter, layerIds, tileManagers, coords);
         expect(casterCalls.length).toBe(2);
+    });
+});
+
+describe('ShadowRenderer height-ramp refit (spec §3.11, native d3/height-ramp-refit)', () => {
+    // Two nearby zooms whose natural cache would HIT (no zoom-in / pan-out refit): isolates the
+    // height-ramp predicate as the sole cause of the second frame's refit.
+    const Z_LO = 14.3;
+    const Z_HI = 14.6;
+
+    test('a zoom-constant caster keeps the sticky cache across the ramp band (control — no refit)', () => {
+        const r = new ShadowRenderer({} as any);
+        // heightVaries === false (the ['get','height']/constant case).
+        const first = makePainter(Z_LO, [feLayer('a', true, () => false)]);
+        r.beginFrame(first.painter, first.layerIds, first.tileManagers, first.coords);
+        expect(casterCalls.length).toBe(1);
+        // Zoom moved inside the [14,15] band but the caster geometry is zoom-fixed → cache hit.
+        const second = makePainter(Z_HI, [feLayer('a', true, () => false)]);
+        r.beginFrame(second.painter, second.layerIds, second.tileManagers, second.coords);
+        expect(casterCalls.length).toBe(1);
+    });
+
+    test('a zoom-interpolated height forces a per-frame refit inside the ramp', () => {
+        const r = new ShadowRenderer({} as any);
+        // heightVaries === true whenever the two compared zooms differ (a camera height curve in-band).
+        const varies = (a: number, b: number) => a !== b;
+        const first = makePainter(Z_LO, [feLayer('a', true, varies)]);
+        r.beginFrame(first.painter, first.layerIds, first.tileManagers, first.coords);
+        expect(casterCalls.length).toBe(1);
+        // Same tile signature, cache would otherwise hit — but the live vs cached zoom extrude to
+        // different heights, so the casters MUST re-render at the current (grown) heights.
+        const second = makePainter(Z_HI, [feLayer('a', true, varies)]);
+        r.beginFrame(second.painter, second.layerIds, second.tileManagers, second.coords);
+        expect(casterCalls.length).toBe(2);
+    });
+
+    test('heightRampRefitDisabled reproduces the stale-shadow defect (sticky cache not force-refit)', () => {
+        const r = new ShadowRenderer({} as any);
+        r.heightRampRefitDisabled = true;
+        const varies = (a: number, b: number) => a !== b;
+        const first = makePainter(Z_LO, [feLayer('a', true, varies)]);
+        r.beginFrame(first.painter, first.layerIds, first.tileManagers, first.coords);
+        expect(casterCalls.length).toBe(1);
+        const second = makePainter(Z_HI, [feLayer('a', true, varies)]);
+        r.beginFrame(second.painter, second.layerIds, second.tileManagers, second.coords);
+        // Escape hatch on → no forced refit → shadows go stale (the defect the flag reproduces).
+        expect(casterCalls.length).toBe(1);
     });
 });
 
