@@ -249,6 +249,13 @@ function drawGroups(painter: Painter, layer: ModelStyleLayer, built: BuiltModels
     // write it, so they never occlude the models drawn on top.
     const depthShadow = new DepthMode(gl.LEQUAL, DepthMode.ReadOnly, painter.depthRangeFor3D);
 
+    // Known limitation (parity-consistent with native): model geometry is placed
+    // against the mercator ground plane and is NOT draped onto 3D terrain — a model
+    // over an elevated tile floats at sea-level z rather than following the terrain
+    // mesh. Native's model layer has the same behavior (its geometry tweaker uses the
+    // flat nearClippedProjMatrix, no terrain elevation sample), so this is a shared
+    // parity gap to close in both renderers together, not a gl-js-only regression.
+
     for (const group of built.groups) {
         const matrix = groupMatrix(mat4.create(), transform.modelViewProjectionMatrix as mat4, group, worldSize, grow);
 
@@ -256,7 +263,16 @@ function drawGroups(painter: Painter, layer: ModelStyleLayer, built: BuiltModels
         if (group.shadow && group.shadowTexture) {
             bindTexture(context, group.shadowTexture, gl.LINEAR, gl.CLAMP_TO_EDGE);
             const shadowColor = new Color(grow, grow, grow, grow, true);
-            drawMesh(program, context, painter, layer, group.shadow, matrix, shadowColor, true, depthShadow, stencilMode, colorMode);
+            // The shadow quad's z-scale is a fixed 1.0, NOT the grow ramp: native's
+            // shadow tweaker uses `scale(pxPerMeter, pxPerMeter, 1.0)` while its model
+            // tweaker uses `scale(pxPerMeter, pxPerMeter, zoomGrow(zoom))`
+            // (render_model_layer.cpp:366 vs the parts tweaker). Only the shadow's
+            // *color* deepens on the grow ramp (shadowColor above); its near-ground
+            // zLift must not be pulled toward the plane by grow. Above z15 grow==1.0
+            // so this is a no-op at the render-golden camera, but it matches native
+            // across the [14,15] grow band where the two z-scales diverge.
+            const shadowMatrix = groupMatrix(mat4.create(), transform.modelViewProjectionMatrix as mat4, group, worldSize, 1);
+            drawMesh(program, context, painter, layer, group.shadow, shadowMatrix, shadowColor, true, depthShadow, stencilMode, colorMode);
         }
 
         for (const part of group.parts) {

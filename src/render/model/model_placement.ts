@@ -73,6 +73,19 @@ export function coverSignature(coords: Array<OverscaledTileID>): string {
  * GeoJSON), the idiomatic analogue of native's `getTile()` walk: the covering
  * tiles ARE the source's viewport cover, and their canonical ids map tile-EXTENT
  * coordinates back to zoom-free world fractions.
+ *
+ * Two placement caveats a future reader should know (both inherited from native's
+ * cover-walk design, not gl-js-specific):
+ *  1. Rebuild is keyed on the *tile cover* signature + the model registry version,
+ *     NOT on a source `setData` alone. Replacing a GeoJSON source's data without
+ *     changing which tiles cover the viewport reuses the cached placement until the
+ *     next cover change (pan/zoom) or a registry bump. Callers that mutate model
+ *     features in place should nudge the map (or bump the registry) to force a
+ *     re-walk; the debounce knob below only affects timing, not this key.
+ *  2. At extreme zoom the viewport cover can exclude a tile whose feature anchor is
+ *     just off-screen, so a large model centered on that anchor may not be walked
+ *     even though its geometry would extend into view — the instance is dropped
+ *     rather than rendered partially. Native has the same cover-membership cutoff.
  */
 export function readModelPlacements(
     coords: Array<OverscaledTileID>,
