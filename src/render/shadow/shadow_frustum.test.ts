@@ -1,11 +1,16 @@
 import {describe, expect, test} from 'vitest';
+import {mat4, vec4} from 'gl-matrix';
 import {LngLat} from '../../geo/lng_lat';
 import {MercatorTransform} from '../../geo/projection/mercator_transform';
 import {sphericalToCartesian} from '../../util/util';
+import {EXTENT} from '../../data/extent';
+import {CanonicalTileID, UnwrappedTileID} from '../../tile/tile_id';
 import {shadowSunDirection} from './shadow_sun';
 import {
     computeWorldToLightClipCascades,
     fitLightClip,
+    lightTileWorldMatrix,
+    shadowPixelsPerMeter,
     shadowViewFootprint,
     texelSnap,
     lightView
@@ -189,5 +194,95 @@ describe('computeWorldToLightClipCascades (spec §3.9 fit)', () => {
         const a = computeWorldToLightClipCascades(t, sunDir, 1024, 1, 0.4, 200, c0, view.farRadius);
         const b = computeWorldToLightClipCascades(t, sunDir, 1024, 1, 0.4, 200, c1, view.farRadius);
         expect(maxAbsDiff(a[0], b[0])).toBe(0);
+    });
+});
+
+/**
+ * WORLD-ANCHORING invariant (the battery gap that let the "shadow shrinks as you zoom in" defect
+ * ship): a map-anchored directional sun must cast a shadow whose length in WORLD space is fixed
+ * (height·tan(sun)), so the shadow-length / building-footprint ratio is INVARIANT across zoom.
+ *
+ * The defect was that the caster + receiver built their tile→world matrix from `calculateTileMatrix`,
+ * whose z-axis is left at unit scale — so the fill-extrusion height (in METERS) was fed to the light
+ * matrix unscaled while the footprint scaled with `worldSize`. `lightTileWorldMatrix` restores native
+ * `matrixForLightTileWorld`'s `pixelsPerMeter` z-scale so height and footprint scale TOGETHER.
+ *
+ * Pre-fix, every ratio below would HALVE per zoom level (worldHeight fixed, worldFootprint doubles).
+ */
+describe('world-anchored shadow length is zoom-invariant (§4 lightTileWorldMatrix)', () => {
+    const lat = 50.4501; // Kyiv
+    const tileSize = 512;
+    const tile00 = new UnwrappedTileID(0, new CanonicalTileID(0, 0, 0));
+    const heightMeters = 30;
+
+    const worldSizeAt = (zoom: number) => tileSize * Math.pow(2, zoom);
+    // shadowPixelsPerMeter only reads worldSize + center.lat; a minimal transform-like suffices.
+    const ppmAt = (worldSize: number) => shadowPixelsPerMeter({worldSize, center: {lat}} as any);
+    const xform = (m: mat4, p: [number, number, number]) =>
+        vec4.transformMat4(vec4.create(), [p[0], p[1], p[2], 1] as vec4, m);
+
+    // Ratio of a building's world-px HEIGHT (z displacement) to its world-px FOOTPRINT (x
+    // displacement) after the tile→world transform. Both must scale with worldSize, so this is
+    // constant across zoom; the pre-fix bug leaves height fixed while footprint grows.
+    function heightFootprintRatio(zoom: number): number {
+        const worldSize = worldSizeAt(zoom);
+        const m = lightTileWorldMatrix(tile00, worldSize, ppmAt(worldSize));
+        const localX = 200; // arbitrary EXTENT-local footprint offset
+        const base = xform(m, [localX, 0, 0]);
+        const roof = xform(m, [localX, 0, heightMeters]);
+        return (roof[2] - base[2]) / base[0]; // worldHeight / worldFootprint
+    }
+
+    test('height/footprint ratio is identical at z15, z16, z17', () => {
+        const r15 = heightFootprintRatio(15);
+        const r16 = heightFootprintRatio(16);
+        const r17 = heightFootprintRatio(17);
+        expect(r16).toBeCloseTo(r15, 10);
+        expect(r17).toBeCloseTo(r15, 10);
+        // Sanity: a real, non-degenerate ratio (not zero / NaN).
+        expect(r15).toBeGreaterThan(0);
+    });
+
+    test('golden: world-px height == heightMeters · pixelsPerMeter(zoom) at each zoom', () => {
+        for (const zoom of [15, 16, 17]) {
+            const worldSize = worldSizeAt(zoom);
+            const ppm = ppmAt(worldSize);
+            const m = lightTileWorldMatrix(tile00, worldSize, ppm);
+            const roof = xform(m, [0, 0, heightMeters]);
+            // ppm·worldSize is O(1e7); 5-decimal tolerance is ~1e-8 relative (float64 rounding floor).
+            expect(roof[2]).toBeCloseTo(heightMeters * ppm, 5);
+        }
+    });
+
+    test('full pipeline: cast-shadow length / footprint ratio is zoom-invariant (z15 vs z16.5)', () => {
+        // Map-anchored low sun; pitch 0 so the map center sits at the frustum focal center.
+        const sunDir = shadowSunDirection(sphericalToCartesian([1.5, 210, 50]), 'map', 0);
+
+        function shadowToFootprintRatio(zoom: number): number {
+            const t = makeTransform({zoom, pitch: 0, bearing: 0, center: [0, 0]});
+            // Center-map at lng/lat 0 → mercator (0.5, 0.5) → tile 0/0/0 local (EXTENT/2, EXTENT/2),
+            // i.e. exactly the frustum focal center, so the test building lands inside the fit.
+            const cascade0 = computeWorldToLightClipCascades(t, sunDir, 2048, 1, 0.4)[0];
+            const m = lightTileWorldMatrix(tile00, t.worldSize, shadowPixelsPerMeter(t));
+            const light = mat4.multiply(new Float64Array(16) as unknown as mat4, cascade0, m);
+
+            const c = EXTENT / 2;
+            const dLocal = 100; // fixed EXTENT-local footprint edge
+            const proj = (p: [number, number, number]) => {
+                const v = xform(light, p);
+                return [v[0] / v[3], v[1] / v[3]] as [number, number];
+            };
+            const base = proj([c, c, 0]);
+            const roof = proj([c, c, heightMeters]); // METERS through the z-scale
+            const foot = proj([c + dLocal, c, 0]);
+            const shadowLen = Math.hypot(roof[0] - base[0], roof[1] - base[1]);
+            const footprint = Math.hypot(foot[0] - base[0], foot[1] - base[1]);
+            return shadowLen / footprint;
+        }
+
+        const r15 = shadowToFootprintRatio(15);
+        const r165 = shadowToFootprintRatio(16.5);
+        expect(r15).toBeGreaterThan(0);
+        expect(r165).toBeCloseTo(r15, 4);
     });
 });
