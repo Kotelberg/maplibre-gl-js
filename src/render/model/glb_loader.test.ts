@@ -307,6 +307,158 @@ describe('loadGlbMesh — glTF subset constraints', () => {
     });
 });
 
+// ---------------------------------------------------------------------------
+// KHR_mesh_quantization — the encoding real-world glTF-Transform exports use for
+// buildings and other large meshes (quantized normalized-SHORT POSITION, required
+// extension, interleaved with a quantized NORMAL at byteStride 12). MapLibre Native's
+// cgltf loader reads these transparently (`cgltf_accessor_read_float` dequantizes; it
+// never gates on `extensionsRequired`); this loader must match. These synthetic fixtures
+// reproduce that exact structural feature (a non-committed production apartment export
+// that used it rendered as a degenerate "two flat planes" / was rejected outright before
+// this loader learned to honor the extension).
+// ---------------------------------------------------------------------------
+
+/** A tetrahedron (genuinely 3D: nonzero extent on all axes, apex at glTF +Y = map height),
+ * built with either FLOAT POSITION or normalized-SHORT quantized POSITION. When `quantized`,
+ * POSITION is interleaved with a normalized-BYTE NORMAL at byteStride 12 — the exact layout
+ * glTF-Transform emits for apartment.glb. Normalized values are all −1, 0, or 1, which map to
+ * SHORT −32767, 0, or 32767 and dequantize back *exactly*, so the quantized and float bakes
+ * must be bit-identical (any dequantization error would show up immediately). */
+function tetraGltf(quantized: boolean, extra: Record<string, unknown> = {}): {gltf: unknown; bin: Uint8Array} {
+    // glTF-frame normalized positions; +Y (index 3 apex) becomes the baked model's height.
+    const verts = [
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 0, -1],
+        [0, 1, 0],
+    ];
+    const indices = [0, 1, 3, 1, 2, 3, 2, 0, 3, 0, 2, 1];
+    const S = 2; // node scale — for quantized assets the node TRS reconstructs world units.
+
+    const idxBytes = new Uint8Array(new Uint16Array(indices).buffer);
+
+    if (!quantized) {
+        const posBytes = new Uint8Array(new Float32Array(verts.flat()).buffer);
+        const bin = new Uint8Array(posBytes.byteLength + idxBytes.byteLength);
+        bin.set(posBytes, 0);
+        bin.set(idxBytes, posBytes.byteLength);
+        const gltf = {
+            asset: {version: '2.0'},
+            scene: 0,
+            scenes: [{nodes: [0]}],
+            nodes: [{mesh: 0, scale: [S, S, S]}],
+            meshes: [{primitives: [{attributes: {POSITION: 0}, indices: 1, mode: 4}]}],
+            accessors: [
+                {bufferView: 0, componentType: 5126, count: 4, type: 'VEC3'},
+                {bufferView: 1, componentType: 5123, count: indices.length, type: 'SCALAR'},
+            ],
+            bufferViews: [
+                {buffer: 0, byteOffset: 0, byteLength: posBytes.byteLength},
+                {buffer: 0, byteOffset: posBytes.byteLength, byteLength: idxBytes.byteLength},
+            ],
+            buffers: [{byteLength: posBytes.byteLength + idxBytes.byteLength}],
+            ...extra,
+        };
+        return {gltf, bin};
+    }
+
+    // Interleaved quantized vertex buffer: per vertex, SHORT[3] POSITION at byteOffset 0,
+    // BYTE[3] NORMAL at byteOffset 8, stride 12 (matches apartment.glb byte-for-byte).
+    const stride = 12;
+    const vbuf = new ArrayBuffer(stride * verts.length);
+    const dv = new DataView(vbuf);
+    for (let i = 0; i < verts.length; i++) {
+        const base = i * stride;
+        for (let c = 0; c < 3; c++) dv.setInt16(base + c * 2, Math.round(verts[i][c] * 32767), true);
+        // A plausible (unused-by-the-bake) quantized NORMAL, proving stride/offset handling.
+        for (let c = 0; c < 3; c++) dv.setInt8(base + 8 + c, c === 2 ? 127 : 0);
+    }
+    const vbytes = new Uint8Array(vbuf);
+    const bin = new Uint8Array(vbytes.byteLength + idxBytes.byteLength);
+    bin.set(vbytes, 0);
+    bin.set(idxBytes, vbytes.byteLength);
+    const gltf = {
+        asset: {version: '2.0', generator: 'glTF-Transform (synthetic)'},
+        extensionsUsed: ['KHR_mesh_quantization'],
+        extensionsRequired: ['KHR_mesh_quantization'],
+        scene: 0,
+        scenes: [{nodes: [0]}],
+        nodes: [{mesh: 0, scale: [S, S, S]}],
+        meshes: [{primitives: [{attributes: {POSITION: 0, NORMAL: 1}, indices: 2, mode: 4}]}],
+        accessors: [
+            {bufferView: 0, byteOffset: 0, componentType: 5122, normalized: true, count: 4, type: 'VEC3'},
+            {bufferView: 0, byteOffset: 8, componentType: 5120, normalized: true, count: 4, type: 'VEC3'},
+            {bufferView: 1, componentType: 5123, count: indices.length, type: 'SCALAR'},
+        ],
+        bufferViews: [
+            {buffer: 0, byteOffset: 0, byteLength: vbytes.byteLength, byteStride: stride},
+            {buffer: 0, byteOffset: vbytes.byteLength, byteLength: idxBytes.byteLength},
+        ],
+        buffers: [{byteLength: bin.byteLength}],
+        ...extra,
+    };
+    return {gltf, bin};
+}
+
+function bakedBounds(model: BakedModel): {min: [number, number, number]; max: [number, number, number]; verts: number} {
+    const min: [number, number, number] = [Infinity, Infinity, Infinity];
+    const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    let verts = 0;
+    for (const part of model.parts) {
+        for (let i = 0; i < part.vertexCount; i++) {
+            for (let a = 0; a < 3; a++) {
+                const v = part.vertices[i * MODEL_VERTEX_FLOATS + a];
+                if (v < min[a]) min[a] = v;
+                if (v > max[a]) max[a] = v;
+            }
+        }
+        verts += part.vertexCount;
+    }
+    return {min, max, verts};
+}
+
+describe('loadGlbMesh — KHR_mesh_quantization (apartment.glb structural parity)', () => {
+    test('honors KHR_mesh_quantization in extensionsRequired and reads quantized normalized-SHORT POSITION', async () => {
+        const {gltf, bin} = tetraGltf(true);
+        const model = await loadGlbMesh(buildGlb(gltf, bin));
+
+        expect(model.valid).toBe(true);
+        expect(model.parts.length).toBeGreaterThan(0);
+        const b = bakedBounds(model);
+        // Genuinely 3D (not the "two flat planes" degenerate bake): every axis has extent,
+        // and the height axis is normalized to exactly 1.
+        expect(b.max[0] - b.min[0]).toBeGreaterThan(0.1);
+        expect(b.max[1] - b.min[1]).toBeGreaterThan(0.1);
+        expect(b.max[2] - b.min[2]).toBeCloseTo(1, 5);
+    });
+
+    test('quantized POSITION bakes identically to the equivalent FLOAT mesh (correct dequantization)', async () => {
+        const quant = tetraGltf(true);
+        const float = tetraGltf(false);
+        const q = await loadGlbMesh(buildGlb(quant.gltf, quant.bin));
+        const f = await loadGlbMesh(buildGlb(float.gltf, float.bin));
+
+        expect(q.valid).toBe(true);
+        expect(f.valid).toBe(true);
+        const qb = bakedBounds(q);
+        const fb = bakedBounds(f);
+        expect(qb.verts).toBe(fb.verts);
+        // {−1,0,1} normalized values quantize to SHORT exactly, so the two bakes must match
+        // to floating-point precision — this asserts the /32767 dequantization is correct.
+        for (let a = 0; a < 3; a++) {
+            expect(qb.min[a]).toBeCloseTo(fb.min[a], 5);
+            expect(qb.max[a]).toBeCloseTo(fb.max[a], 5);
+        }
+    });
+
+    test('still rejects a genuinely-unsupported required extension alongside KHR_mesh_quantization', async () => {
+        const {gltf, bin} = tetraGltf(true, {extensionsRequired: ['KHR_mesh_quantization', 'KHR_draco_mesh_compression']});
+        const model = await loadGlbMesh(buildGlb(gltf, bin));
+        expect(model.valid).toBe(false);
+        expect(model.parts).toEqual([]);
+    });
+});
+
 describe('loadGlbMesh — uint16 part splitting', () => {
     test('splits a group whose triangle count would overflow one uint16-indexed part', async () => {
         // One vertex more than a single part can hold: MAX_PART_VERTICES is a multiple of 3,
