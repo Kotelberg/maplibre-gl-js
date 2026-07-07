@@ -2736,6 +2736,33 @@ export class Map extends Camera {
     }
 
     /**
+     * Fork-internal (HataHub, experimental): select a `model`-layer instance by its
+     * source feature id to draw a breathing selection halo around it, or pass
+     * `null` to clear the selection. The id is matched against the GeoJSON feature
+     * `id` of the model source — the same convention as the app's building
+     * selection. Changing the selection repaints; while a selection is active the
+     * model layer breathes via per-frame repaints and returns to idle (zero
+     * repaints) as soon as it is cleared.
+     *
+     * @param featureId - The feature id to select, or `null` to deselect.
+     * @example
+     * map.setModelSelection(42);   // halo the model at feature 42
+     * map.setModelSelection(null); // clear it
+     */
+    setModelSelection(featureId: string | number | null): this {
+        this.style.setModelSelection(featureId);
+        return this;
+    }
+
+    /**
+     * Returns the currently selected model feature id, or `null` if none is
+     * selected (fork-internal, experimental — see {@link Map.setModelSelection}).
+     */
+    getModelSelection(): string | number | null {
+        return this.style.getModelSelection();
+    }
+
+    /**
      * Adds a [MapLibre style layer](https://maplibre.org/maplibre-style-spec/layers)
      * to the map's style.
      *
