@@ -90,6 +90,12 @@ export class ShadowRenderer {
     private allocatedCascadeCount = 0;
     /** Signature of the covering-tile set the maps were last rendered against (caster-dirty detection). */
     private lastCasterSignature = '';
+    /**
+     * Debug/A-B escape hatch (default off) for the §3.11 height-ramp refit. When `true`, the sticky
+     * cache is NOT force-refit through a zoom-interpolated height ramp — reproducing the stale-shadow
+     * defect. Used by `debug/shadows.html` to A/B the fix in a single build; never set in production.
+     */
+    heightRampRefitDisabled = false;
 
     // Per-frame state, set by beginFrame(), read by the FE draw. Reset to inactive each frame.
     active = false;
@@ -152,7 +158,25 @@ export class ShadowRenderer {
         // Caster-set signature: a change (tiles streamed in/out, layer set changed) forces a refit so
         // newly-loaded buildings cast this frame instead of being missing from a reused map.
         const signature = this.casterSignature(feLayers);
-        const castersDirty = signature !== this.lastCasterSignature;
+        let castersDirty = signature !== this.lastCasterSignature;
+
+        // Height-ramp refit (spec §3.11, native `d3/height-ramp-refit`). The sticky cache assumes
+        // caster geometry depends only on world position, so a fitted shadow map stays valid across
+        // pan/rotate/pitch. A zoom-interpolated fill-extrusion-height (the common z14→15 grow-in ramp)
+        // violates that: on a cache-HIT frame the depth map still holds the last refit frame's building
+        // heights, so while the camera zooms through the ramp the live (growing) buildings render
+        // against stale caster depths and their shadows do NOT grow with them. Force a refit whenever
+        // the cached vs live zoom extrude to different caster heights. This no-ops above/below the ramp
+        // and for zoom-constant styles, so the sticky cache is otherwise untouched (perf win preserved).
+        if (!this.heightRampRefitDisabled && !castersDirty && this.frustumState.valid) {
+            const cachedZoom = this.frustumState.cachedZoom;
+            for (const {layer} of feLayers) {
+                if (layer.shadowCasterHeightVariesBetween(cachedZoom, zoom)) {
+                    castersDirty = true;
+                    break;
+                }
+            }
+        }
 
         const lightInput: ShadowLightInput = {
             position: light.properties.get('position'),
