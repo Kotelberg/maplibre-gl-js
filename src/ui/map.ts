@@ -2686,9 +2686,11 @@ export class Map extends Camera {
      *
      * The model is loaded from either a URL (fetched through the map's request
      * machinery) or an already-decoded GLB `ArrayBuffer`, then parsed and baked.
-     * While a model is loading (or if it fails to parse), features referencing it
-     * draw a face-colored placeholder cube. Only core glTF is supported — no
-     * Draco, meshopt, or sparse accessors.
+     * While a model is loading, features referencing it render nothing (native's
+     * synchronous disk load has no such window, so gl-js avoids flashing a
+     * placeholder during the fetch); once loaded they draw the model, and if it
+     * fails to parse they fall back to a face-colored placeholder cube. Only core
+     * glTF is supported — no Draco, meshopt, or sparse accessors.
      *
      * @param id - The id features resolve via their `model-id` property.
      * @param urlOrData - A URL to a `.glb`/`.gltf` (GLB) file, or an in-memory GLB `ArrayBuffer`.
