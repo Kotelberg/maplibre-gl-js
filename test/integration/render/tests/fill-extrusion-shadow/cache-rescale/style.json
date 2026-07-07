@@ -1,0 +1,67 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "width": 256,
+      "height": 256,
+      "operations": [
+        ["setZoom", 16.8],
+        ["wait"],
+        ["idle"]
+      ],
+      "description": "fill-extrusion cast-shadows sticky-cache rescale path (§3.10). The map loads and refits the light-clip frustum at zoom 16.5 (cachedZoom = 16.5), then zooms in to 16.8 -- a <0.58 zoom-in that stays within the oversized cached coverage, so it is served as a RESCALED cache hit (liveS = exp2(0.3) ~= 1.23, no caster re-render) rather than a refit. This golden proves the rescaled cascade matrices still sample the cached depth map correctly (crisp shadow, no drift/misalignment) on the liveS != 1 path. The cache-present-vs-forced-always-refit BIT identity is unit-covered in shadow_cache.test.ts and the settled-frame render identity is covered by the browser oscillation test."
+    }
+  },
+  "sources": {
+    "geojson": {
+      "type": "geojson",
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "properties": {"height": 80},
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[[-0.00018, -0.00018], [-0.00018, 0.00018], [0.00018, 0.00018], [0.00018, -0.00018], [-0.00018, -0.00018]]]
+            }
+          },
+          {
+            "type": "Feature",
+            "properties": {"height": 15},
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[[0.0004, 0.0004], [0.0004, 0.0008], [0.0008, 0.0008], [0.0008, 0.0004], [0.0004, 0.0004]]]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "light": {
+    "anchor": "map",
+    "position": [1.5, 210, 50],
+    "intensity": 0.5,
+    "cast-shadows": true,
+    "shadow-intensity": 0.6
+  },
+  "pitch": 55,
+  "zoom": 16.5,
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {"background-color": "#d7d2c8"}
+    },
+    {
+      "id": "extrusion",
+      "type": "fill-extrusion",
+      "source": "geojson",
+      "paint": {
+        "fill-extrusion-color": "#c8b89a",
+        "fill-extrusion-height": ["get", "height"],
+        "fill-extrusion-opacity": 1.0
+      }
+    }
+  ]
+}

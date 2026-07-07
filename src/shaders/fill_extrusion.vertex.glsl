@@ -16,6 +16,21 @@ in vec4 a_normal_ed;
 
 out vec4 v_color;
 
+#ifdef RENDER_SHADOWS
+// Shadow-receiver variant (spec §3, transcribed from native
+// shaders/fill_extrusion_shadow.vertex.glsl @ 657952f4). The concentric per-cascade light-clip
+// matrices are supplied per draw (near->far; only the first u_cascade_count are valid); each is the
+// per-tile `tile-local -> light-clip` transform (worldToLightClip * tileMatrix), the same tile-local
+// space the caster wrote depth in. highp throughout (§3.8).
+uniform highp mat4 u_light_matrix[4];
+uniform highp int u_cascade_count;
+
+out highp vec4 v_shadow_pos[4];
+out highp float v_slope;
+out highp float v_wallness;
+flat out int v_cascade_count;
+#endif
+
 #pragma mapbox: define highp float base
 #pragma mapbox: define highp float height
 
@@ -68,6 +83,21 @@ void main() {
     vec3 normalForLighting = normal / 16384.0;
     float directional = clamp(dot(normalForLighting, u_lightpos), 0.0, 1.0);
 
+#ifdef RENDER_SHADOWS
+    // v_slope = (1 - n·L): 0 on sun-facing faces, ->1 on faces turned away. It scales the receiver's
+    // depth bias so a building never self-shadows its own roof/away-faces (§3.6). Native computes it
+    // from `dot(normal, u_light_position_base.xyz)` where that xyz is the UNIT light DIRECTION
+    // (fill_extrusion_shadow.vertex.glsl:75,93), giving a true cosine. gl-js's stock `directional`
+    // (line 84 above) instead dots against `u_lightpos`, which is the radial-scaled light POSITION
+    // (|u_lightpos| = light.position radial, e.g. 1.15-1.5, NOT unit) — so that dot saturates to 1.0
+    // for any face within ~48deg of the sun, collapsing v_slope to 0 and zeroing the slope bias on
+    // roofs (=> self-shadow acne that no u_shadow_slope_bias can fix, since it is multiplied by 0).
+    // Normalize the light vector here so v_slope is the true cosine native intends. Kept inside the
+    // RENDER_SHADOWS variant so stock fill-extrusion shading (which deliberately uses the scaled
+    // position) is byte-unchanged. Shadows are mercator (anchor:"map"), so the pre-GLOBE fraction.
+    v_slope = 1.0 - clamp(dot(normalForLighting, normalize(u_lightpos)), 0.0, 1.0);
+#endif
+
     #ifdef GLOBE
         mat3 rotMatrix = globeGetRotationMatrix(spherePos);
         normalForLighting = rotMatrix * normalForLighting;
@@ -97,4 +127,22 @@ void main() {
     v_color.g += clamp(color.g * directional * u_lightcolor.g, mix(0.0, 0.3, 1.0 - u_lightcolor.g), 1.0);
     v_color.b += clamp(color.b * directional * u_lightcolor.b, mix(0.0, 0.3, 1.0 - u_lightcolor.b), 1.0);
     v_color *= u_opacity;
+
+#ifdef RENDER_SHADOWS
+    // 1.0 on vertical walls (normal.z~0), 0.0 on roofs (normal.z~+-1). Used by the fragment shader to
+    // suppress the projective-aliased cast-shadow term on walls (§3.7); note the metric is
+    // 1 - |normal.z|, NOT the stock normal.y heuristic (native fill_extrusion_shadow.vertex.glsl:95).
+    v_wallness = 1.0 - abs(normalForLighting.z);
+    v_cascade_count = u_cascade_count;
+
+    // Project into every cascade's light clip (near->far). Sampled in tile-local space using the same
+    // `vec4(a_pos, elevation, 1.0)` the caster wrote depth with (un-translated a_pos, matching the
+    // shadowDepth caster) so the receiver samples exactly where the occluder was recorded. Unused
+    // cascade slots replicate cascade 0 (native fill_extrusion_shadow.vertex.glsl:98-101).
+    highp vec4 shadowWorldLocal = vec4(a_pos, elevation, 1.0);
+    v_shadow_pos[0] = u_light_matrix[0] * shadowWorldLocal;
+    v_shadow_pos[1] = u_light_matrix[u_cascade_count > 1 ? 1 : 0] * shadowWorldLocal;
+    v_shadow_pos[2] = u_light_matrix[u_cascade_count > 2 ? 2 : 0] * shadowWorldLocal;
+    v_shadow_pos[3] = u_light_matrix[u_cascade_count > 3 ? 3 : 0] * shadowWorldLocal;
+#endif
 }

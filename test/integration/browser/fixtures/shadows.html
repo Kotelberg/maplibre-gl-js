@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>MapLibre GL JS shadow oscillation harness</title>
+    <meta charset='utf-8'>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="about:blank">
+    <link rel='stylesheet' href='../../../../dist/maplibre-gl.css' />
+    <style>
+        body { margin: 0; padding: 0; }
+        html, body, #map { height: 100%; }
+    </style>
+</head>
+
+<body>
+<div id='map'></div>
+
+<script src='../../../../dist/maplibre-gl-dev.js'></script>
+
+<script>
+// A deterministic, network-free block of 3D "buildings" (a grid of boxes with varied heights
+// around a fixed coordinate) so the fill-extrusion shadow caster/receiver can be exercised in a
+// browser without a vector tile source or API key. Kept in lockstep with debug/shadows.html.
+const CENTER = [30.5234, 50.4501];
+const METERS_PER_DEG_LAT = 111320;
+function metersToDeg(dxM, dyM, lat) {
+    const dLat = dyM / METERS_PER_DEG_LAT;
+    const dLng = dxM / (METERS_PER_DEG_LAT * Math.cos(lat * Math.PI / 180));
+    return [dLng, dLat];
+}
+function box(cx, cy, w, d, height) {
+    const corners = [[-w / 2, -d / 2], [w / 2, -d / 2], [w / 2, d / 2], [-w / 2, d / 2], [-w / 2, -d / 2]];
+    const ring = corners.map(([ox, oy]) => {
+        const [dLng, dLat] = metersToDeg(cx + ox, cy + oy, CENTER[1]);
+        return [CENTER[0] + dLng, CENTER[1] + dLat];
+    });
+    return {type: 'Feature', properties: {height}, geometry: {type: 'Polygon', coordinates: [ring]}};
+}
+// A 4x4 grid with a tall tower in the middle so neighbours receive its cast shadow on their roofs.
+const features = [];
+const heights = [
+    [18, 12, 40, 14],
+    [10, 60, 16, 22],
+    [24, 14, 90, 12],
+    [12, 30, 12, 20],
+];
+const spacing = 55;
+for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 4; c++) {
+        const cx = (c - 1.5) * spacing;
+        const cy = (1.5 - r) * spacing;
+        features.push(box(cx, cy, 34, 34, heights[r][c]));
+    }
+}
+const buildings = {type: 'FeatureCollection', features};
+
+// the following variable is important for the browser test to run properly
+const map = window.map = new maplibregl.Map({
+    container: 'map',
+    preserveDrawingBuffer: true,
+    fadeDuration: 0,
+    center: CENTER,
+    zoom: 15.6,
+    pitch: 55,
+    bearing: 0,
+    antialias: false,
+    style: {
+        version: 8,
+        sources: {
+            buildings: {type: 'geojson', data: buildings}
+        },
+        light: {
+            anchor: 'map',
+            position: [1.5, 210, 45],
+            intensity: 0.5,
+            'cast-shadows': true,
+            'shadow-intensity': 0.6
+        },
+        layers: [
+            {id: 'bg', type: 'background', paint: {'background-color': '#d7d2c8'}},
+            {
+                id: 'buildings-3d', type: 'fill-extrusion', source: 'buildings',
+                paint: {
+                    'fill-extrusion-color': '#c8b89a',
+                    'fill-extrusion-height': ['get', 'height'],
+                    'fill-extrusion-base': 0,
+                    'fill-extrusion-opacity': 1.0
+                }
+            }
+        ]
+    }
+});
+</script>
+
+</body>
+</html>

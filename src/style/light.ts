@@ -53,6 +53,8 @@ type LightProps = {
     'position': LightPositionProperty;
     'color': DataConstantProperty<Color>;
     'intensity': DataConstantProperty<number>;
+    'cast-shadows': DataConstantProperty<boolean>;
+    'shadow-intensity': DataConstantProperty<number>;
 };
 
 type LightPropsPossiblyEvaluated = {
@@ -60,6 +62,8 @@ type LightPropsPossiblyEvaluated = {
     'position': LightPosition;
     'color': Color;
     'intensity': number;
+    'cast-shadows': boolean;
+    'shadow-intensity': number;
 };
 
 let lightProperties: Properties<LightProps>;
@@ -79,6 +83,8 @@ export class Light extends Evented {
             'position': new LightPositionProperty(),
             'color': new DataConstantProperty(styleSpec.light.color as StylePropertySpecification),
             'intensity': new DataConstantProperty(styleSpec.light.intensity as StylePropertySpecification),
+            'cast-shadows': new DataConstantProperty(styleSpec.light['cast-shadows'] as StylePropertySpecification),
+            'shadow-intensity': new DataConstantProperty(styleSpec.light['shadow-intensity'] as StylePropertySpecification),
         });
         this._transitionable = new Transitionable(lightProperties, undefined);
         this.setLight(lightOptions);

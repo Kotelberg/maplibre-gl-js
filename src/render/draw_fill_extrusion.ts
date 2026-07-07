@@ -1,3 +1,5 @@
+import {mat4} from 'gl-matrix';
+
 import {DepthMode} from '../gl/depth_mode';
 import {StencilMode} from '../gl/stencil_mode';
 import {ColorMode} from '../gl/color_mode';
@@ -5,13 +7,16 @@ import {CullFaceMode} from '../gl/cull_face_mode';
 import {
     fillExtrusionUniformValues,
     fillExtrusionPatternUniformValues,
+    fillExtrusionShadowUniformValues,
 } from './program/fill_extrusion_program';
+import {calculateTileMatrix} from '../geo/projection/mercator_utils';
 
 import type {Painter, RenderOptions} from './painter';
 import type {TileManager} from '../tile/tile_manager';
 import type {FillExtrusionStyleLayer} from '../style/style_layer/fill_extrusion_style_layer';
 import type {FillExtrusionBucket} from '../data/bucket/fill_extrusion_bucket';
 import type {OverscaledTileID} from '../tile/tile_id';
+import type {BuildingShadowFrame} from './shadow/shadow_renderer';
 
 import {updatePatternPositionsInProgram} from './update_pattern_positions_in_program';
 import {translatePosition} from '../util/util';
@@ -24,25 +29,36 @@ export function drawFillExtrusion(painter: Painter, tileManager: TileManager, la
 
     const {isRenderingToTexture} = renderOptions;
     if (painter.renderPass === 'translucent') {
+        // Shadow receiver inputs for this frame (spec §3.1), or null when shadows are inactive.
+        const shadowRenderer = painter.shadowRenderer;
+        const shadowFrame = shadowRenderer && shadowRenderer.active ? shadowRenderer.getBuildingShadowFrame() : null;
+
+        // Ground-shadow overlay: drawn ONCE by the first (lowest-index) qualifying fill-extrusion
+        // layer in z-order (native per-layer ground ownership, spec §3.1), before its buildings so
+        // they naturally overdraw it. No-op unless this layer owns the ground draw this frame.
+        if (shadowRenderer && shadowRenderer.isGroundOwner(layer.id) && !isRenderingToTexture) {
+            shadowRenderer.drawGround(painter, coords);
+        }
+
         const depthMode = new DepthMode(painter.context.gl.LEQUAL, DepthMode.ReadWrite, painter.depthRangeFor3D);
 
         if (opacity === 1 && !layer.paint.get('fill-extrusion-pattern').constantOr(1 as any)) {
             const colorMode = painter.colorModeForRenderPass();
-            drawExtrusionTiles(painter, tileManager, layer, coords, depthMode, StencilMode.disabled, colorMode, isRenderingToTexture);
+            drawExtrusionTiles(painter, tileManager, layer, coords, depthMode, StencilMode.disabled, colorMode, isRenderingToTexture, shadowFrame);
 
         } else {
             // Draw transparent buildings in two passes so that only the closest surface is drawn.
             // First draw all the extrusions into only the depth buffer. No colors are drawn.
             drawExtrusionTiles(painter, tileManager, layer, coords, depthMode,
                 StencilMode.disabled,
-                ColorMode.disabled, isRenderingToTexture);
+                ColorMode.disabled, isRenderingToTexture, shadowFrame);
 
             // Then draw all the extrusions a second type, only coloring fragments if they have the
             // same depth value as the closest fragment in the previous pass. Use the stencil buffer
             // to prevent the second draw in cases where we have coincident polygons.
             drawExtrusionTiles(painter, tileManager, layer, coords, depthMode,
                 painter.stencilModeFor3D(),
-                painter.colorModeForRenderPass(), isRenderingToTexture);
+                painter.colorModeForRenderPass(), isRenderingToTexture, shadowFrame);
         }
     }
 }
@@ -55,7 +71,8 @@ function drawExtrusionTiles(
     depthMode: DepthMode,
     stencilMode: Readonly<StencilMode>,
     colorMode: Readonly<ColorMode>,
-    isRenderingToTexture: boolean) {
+    isRenderingToTexture: boolean,
+    shadowFrame: BuildingShadowFrame | null) {
     const context = painter.context;
     const gl = context.gl;
     const fillPropertyName = 'fill-extrusion-pattern';
@@ -66,6 +83,20 @@ function drawExtrusionTiles(
     const constantPattern = patternProperty.constantOr(null);
     const transform = painter.transform;
 
+    // The building shadow receiver is a `#define RENDER_SHADOWS` variant of the FE program. It samples
+    // the packed-depth cascade maps on texture units 0..N — which the patterned path uses for its
+    // image atlas — so shadows apply to the non-patterned FE path only (patterned buildings keep the
+    // stock program). Terrain is the documented unsupported config (the caster carries no centroid
+    // elevation), so the receiver stays off under 3D terrain too.
+    const useShadowReceiver = !!shadowFrame && !image && !painter.style.map.terrain;
+    if (useShadowReceiver) {
+        // Bind the cascade maps NEAREST/CLAMP to their sampler units (spec §3.3.2) before the draws.
+        for (let c = 0; c < shadowFrame.cascadeCount && c < 4; c++) {
+            context.activeTexture.set(gl.TEXTURE0 + shadowFrame.shadowmapUnits[c]);
+            shadowFrame.maps[c].texture.bind(gl.NEAREST, gl.CLAMP_TO_EDGE);
+        }
+    }
+
     for (const coord of coords) {
         const tile = tileManager.getTile(coord);
         const bucket: FillExtrusionBucket = (tile.getBucket(layer) as any);
@@ -73,7 +104,8 @@ function drawExtrusionTiles(
 
         const terrainData = painter.style.map.terrain && painter.style.map.terrain.getTerrainData(coord);
         const programConfiguration = bucket.programConfigurations.get(layer.id);
-        const program = painter.useProgram(image ? 'fillExtrusionPattern' : 'fillExtrusion', programConfiguration);
+        const programName = image ? 'fillExtrusionPattern' : (useShadowReceiver ? 'fillExtrusionShadow' : 'fillExtrusion');
+        const program = painter.useProgram(programName, programConfiguration, false, useShadowReceiver ? ['#define RENDER_SHADOWS'] : []);
 
         if (image) {
             painter.context.activeTexture.set(gl.TEXTURE0);
@@ -92,13 +124,44 @@ function drawExtrusionTiles(
         );
 
         const shouldUseVerticalGradient = layer.paint.get('fill-extrusion-vertical-gradient');
-        const uniformValues = image ?
-            fillExtrusionPatternUniformValues(painter, shouldUseVerticalGradient, opacity, translate, coord, crossfade, tile) :
-            fillExtrusionUniformValues(painter, shouldUseVerticalGradient, opacity, translate);
+        let uniformValues;
+        if (image) {
+            uniformValues = fillExtrusionPatternUniformValues(painter, shouldUseVerticalGradient, opacity, translate, coord, crossfade, tile);
+        } else if (useShadowReceiver) {
+            uniformValues = fillExtrusionShadowUniformValues(painter, shouldUseVerticalGradient, opacity, translate, {
+                lightMatrices: composeTileLightMatrices(coord, transform.worldSize, shadowFrame.cascades),
+                cascadeCount: shadowFrame.cascadeCount,
+                intensity: shadowFrame.intensity,
+                texelSize: shadowFrame.texelSize,
+                bias: shadowFrame.bias,
+                slopeBias: shadowFrame.slopeBias,
+                shadowmapUnits: shadowFrame.shadowmapUnits,
+            });
+        } else {
+            uniformValues = fillExtrusionUniformValues(painter, shouldUseVerticalGradient, opacity, translate);
+        }
 
         program.draw(context, context.gl.TRIANGLES, depthMode, stencilMode, colorMode, CullFaceMode.backCCW,
             uniformValues, terrainData, projectionData, layer.id, bucket.layoutVertexBuffer, bucket.indexBuffer,
             bucket.segments, layer.paint, painter.transform.zoom,
             programConfiguration, painter.style.map.terrain && bucket.centroidVertexBuffer);
     }
+}
+
+/**
+ * Per-cascade per-tile `tile-local → light-clip` matrices, flattened into a single `Float32Array` of
+ * `16 * cascadeCount` for `u_light_matrix[4]`. Each is `worldToLightClip[c] · calculateTileMatrix(coord)`
+ * — the SAME tile matrix the caster and the visible FE draw use, so the receiver samples exactly where
+ * the caster wrote depth (spec §3.1).
+ */
+function composeTileLightMatrices(coord: OverscaledTileID, worldSize: number, cascades: mat4[]): Float32Array {
+    const cascadeCount = cascades.length;
+    const tileMatrix = calculateTileMatrix(coord.toUnwrapped(), worldSize);
+    const out = new Float32Array(16 * cascadeCount);
+    const scratch = new Float64Array(16) as unknown as mat4;
+    for (let c = 0; c < cascadeCount; c++) {
+        mat4.multiply(scratch, cascades[c], tileMatrix);
+        out.set(scratch as unknown as ArrayLike<number>, c * 16);
+    }
+    return out;
 }

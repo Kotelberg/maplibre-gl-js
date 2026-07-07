@@ -1,4 +1,5 @@
-import {fillExtrusionUniforms, fillExtrusionPatternUniforms} from './fill_extrusion_program';
+import {fillExtrusionUniforms, fillExtrusionPatternUniforms, fillExtrusionShadowUniforms} from './fill_extrusion_program';
+import {groundShadowUniforms} from './ground_shadow_program';
 import {fillPatternUniforms, fillOutlineUniforms, fillOutlinePatternUniforms, fillUniforms} from './fill_program';
 import {circleUniforms} from './circle_program';
 import {collisionUniforms, collisionCircleUniforms} from './collision_program';
@@ -16,11 +17,13 @@ import {atmosphereUniforms} from './atmosphere_program';
 import {skyUniforms} from './sky_program';
 import {modelUniforms} from './model_program';
 import {modelBloomUniforms} from './model_bloom_program';
+import {shadowDepthUniforms} from './shadow_depth_program';
 
 const emptyUniforms = (_: any, __: any): any => {};
 
 export const programUniforms = {
     fillExtrusion: fillExtrusionUniforms,
+    fillExtrusionShadow: fillExtrusionShadowUniforms,
     fillExtrusionPattern: fillExtrusionPatternUniforms,
     fill: fillUniforms,
     fillPattern: fillPatternUniforms,
@@ -55,5 +58,7 @@ export const programUniforms = {
     atmosphere: atmosphereUniforms,
     sky: skyUniforms,
     model: modelUniforms,
-    modelBloom: modelBloomUniforms
+    modelBloom: modelBloomUniforms,
+    shadowDepth: shadowDepthUniforms,
+    groundShadow: groundShadowUniforms
 };

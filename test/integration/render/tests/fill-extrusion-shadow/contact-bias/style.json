@@ -1,0 +1,55 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "width": 256,
+      "height": 256,
+      "description": "fill-extrusion cast-shadows bias contact proof (§3.12.3). A low sun (polar 30deg) throws a long ground shadow from the tall tower; with the shipped bias (constant 0, slope 0.05, per-cascade 8x/4x) the cast shadow MEETS the tower wall base with no peter-panning gap, and the roofs carry no grazing-sun acne. A/B (documented, not renderable as a style knob because the bias constants are hard-coded shader uniforms, not style properties): a nonzero constant bias detaches the shadow from the wall base (peter-panning), a zero slope bias reintroduces roof acne (proven live in Task 5's first-light debug: 10x slope bias was a no-op until v_slope was fixed to a normalized light direction, then the shipped 0.05 discriminated correctly). This golden is the shipped-bias contact evidence."
+    }
+  },
+  "sources": {
+    "geojson": {
+      "type": "geojson",
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "properties": {"height": 90},
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[[-0.0002, -0.0002], [-0.0002, 0.0002], [0.0002, 0.0002], [0.0002, -0.0002], [-0.0002, -0.0002]]]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "light": {
+    "anchor": "map",
+    "position": [1.5, 200, 30],
+    "intensity": 0.4,
+    "cast-shadows": true,
+    "shadow-intensity": 0.7
+  },
+  "pitch": 60,
+  "bearing": 20,
+  "zoom": 17,
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {"background-color": "#d7d2c8"}
+    },
+    {
+      "id": "extrusion",
+      "type": "fill-extrusion",
+      "source": "geojson",
+      "paint": {
+        "fill-extrusion-color": "#c8b89a",
+        "fill-extrusion-height": ["get", "height"],
+        "fill-extrusion-opacity": 1.0
+      }
+    }
+  ]
+}
