@@ -19,8 +19,24 @@ export const SHADOW_OVERSIZE = 1.5;
 export const SHADOW_ZOOM_IN_REFIT = 1.5;
 /** Cascade split fraction default (`shadow_pass.cpp:91-99`). */
 export const SHADOW_CASCADE_SPLIT_DEFAULT = 0.4;
-/** Default allocated cascade count — gl-js follows the GL/Vulkan backend (`shadow_pass.cpp:28-53`, §3.9). */
-export const SHADOW_CASCADE_COUNT_DEFAULT = 1;
+/**
+ * Default allocated cascade count. Matches native's Metal backend default of 2 (`shadow_pass.cpp:28-53`,
+ * §3.9): a tight pitch-gated NEAR cascade plus the full-radius far cascade. This is REQUIRED for the
+ * building-roof receiver to fade in together with the ground receiver through the z14-15 height ramp
+ * (spec §3.11). Rationale: a single full-radius cascade spreads its 1024 texels over a screen-bounded
+ * (zoom-invariant) world footprint, so its texel-world-size is large. The roof receiver samples the
+ * shadow map at its own point projected along the sun — a shift of `height · pixelsPerMeter` world-px,
+ * which scales with zoom while the texel-world-size does not. Below ~z16.5 that sun-shift is SUB-TEXEL,
+ * so a roof samples its OWN footprint texel (self-shadow, bias-suppressed) instead of a neighbour's cast
+ * shadow — the roof stays lit while the GROUND (sampled at z=0, a large contiguous darkened region) has
+ * shown the same shadow since the ramp. The pitch-gated near cascade (radius = farRadius · split, ~2.5×
+ * the texel density) resolves the sun-shift a full zoom level earlier, bringing the roof receiver back
+ * in sync with the ground. The near cascade only engages at pitch ≥ SHADOW_PITCH_GATE_DEG (the app
+ * auto-pitches as it zooms in), and drops to the single full-density cascade at near-top-down views —
+ * exactly native's `activeShadowCascadeCount`. The receiver itself has NO zoom/pitch gate; the cascade
+ * count is shared infrastructure that the caster, ground receiver, and building receiver all read.
+ */
+export const SHADOW_CASCADE_COUNT_DEFAULT = 2;
 /** Near-cascade pitch gate threshold in degrees (`shadow_pass.cpp`, `activeShadowCascadeCount`). */
 export const SHADOW_PITCH_GATE_DEG = 20;
 

@@ -30,12 +30,16 @@ vi.mock('./draw_ground_shadow', () => ({
 
 import {ShadowRenderer, shadowHeightFade} from './shadow_renderer';
 
-function makeTransform(zoom: number): MercatorTransform {
+// pitch defaults to 0 (near-top-down) so the caster/cache/teardown assertions below exercise the
+// single full-density cascade (`activeShadowCascadeCount` drops the pitch-gated near cascade at
+// pitch < SHADOW_PITCH_GATE_DEG). The pitch-gated 2-cascade path (native Metal default) is covered
+// explicitly in the "pitch-gated near cascade" describe block.
+function makeTransform(zoom: number, pitch = 0): MercatorTransform {
     const t = new MercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 70, renderWorldCopies: true});
     t.resize(1024, 768);
     t.setCenter(new LngLat(30.5234, 50.4501));
     t.setZoom(zoom);
-    t.setPitch(55);
+    t.setPitch(pitch);
     return t;
 }
 
@@ -58,7 +62,7 @@ function feLayer(id: string, hasBucket = true, heightVaries: (a: number, b: numb
 
 type LightOpts = {castShadows?: boolean; anchor?: 'map' | 'viewport'; intensity?: number};
 
-function makePainter(zoom: number, layers: Array<ReturnType<typeof feLayer>>, light: LightOpts = {}) {
+function makePainter(zoom: number, layers: Array<ReturnType<typeof feLayer>>, light: LightOpts = {}, pitch = 0) {
     const _layers: {[id: string]: unknown} = {};
     const tileManagers: {[id: string]: unknown} = {};
     const coords: {[id: string]: Array<{key: string}>} = {};
@@ -77,7 +81,7 @@ function makePainter(zoom: number, layers: Array<ReturnType<typeof feLayer>>, li
     };
     const painter = {
         context: {},
-        transform: makeTransform(zoom),
+        transform: makeTransform(zoom, pitch),
         style: {
             light: {properties: {get: (k: string) => props[k]}},
             _layers,
@@ -85,6 +89,12 @@ function makePainter(zoom: number, layers: Array<ReturnType<typeof feLayer>>, li
         }
     };
     return {painter: painter as any, tileManagers: tileManagers as any, coords: coords as any, layerIds: layers.map(l => l.id)};
+}
+
+// A camera pitched past SHADOW_PITCH_GATE_DEG (20°), so `activeShadowCascadeCount` engages the near
+// cascade (the native Metal 2-cascade default). Mirrors the app's auto-pitch when zoomed in.
+function makePitchedPainter(zoom: number, layers: Array<ReturnType<typeof feLayer>>, light: LightOpts = {}) {
+    return makePainter(zoom, layers, light, 55);
 }
 
 afterEach(() => {
@@ -134,7 +144,7 @@ describe('ShadowRenderer caster pass + usable latch (sites 1/4) & ground ownersh
         const r = new ShadowRenderer({} as any);
         const {painter, tileManagers, coords, layerIds} = makePainter(16, [feLayer('a')]);
         expect(r.beginFrame(painter, layerIds, tileManagers, coords)).toBe(true);
-        expect(allocatedMaps).toBe(1); // default 1 cascade
+        expect(allocatedMaps).toBe(1); // flat pitch → single active cascade
         expect(casterCalls.length).toBe(1);
         expect(casterCalls[0].clearFirst).toBe(true);
         expect(r.frustumState.shadowMapUsable).toBe(true);
@@ -237,6 +247,55 @@ describe('ShadowRenderer height-ramp refit (spec §3.11, native d3/height-ramp-r
         r.beginFrame(second.painter, second.layerIds, second.tileManagers, second.coords);
         // Escape hatch on → no forced refit → shadows go stale (the defect the flag reproduces).
         expect(casterCalls.length).toBe(1);
+    });
+});
+
+describe('ShadowRenderer pitch-gated near cascade (native Metal 2-cascade default, spec §3.9/§3.11)', () => {
+    // The building-roof receiver only picks up a neighbour's cast shadow once the roof's sun-shifted
+    // shadow-map sample clears one texel; under a single full-radius cascade that texel-world-size is
+    // large, so roofs lag the GROUND receiver by ~a full zoom level (the reported z16.5 desync). The
+    // pitch-gated NEAR cascade (denser texels) resolves the sample a zoom level earlier, bringing the
+    // building receiver back in sync with the ground through the ramp. It engages ONLY when pitched.
+
+    test('near-top-down (flat) view uses the single full-density cascade', () => {
+        const r = new ShadowRenderer({} as any);
+        const {painter, tileManagers, coords, layerIds} = makePainter(16, [feLayer('a')]); // pitch 0
+        expect(r.beginFrame(painter, layerIds, tileManagers, coords)).toBe(true);
+        expect(allocatedMaps).toBe(1);
+        expect(casterCalls.length).toBe(1);
+        expect(r.getBuildingShadowFrame()!.cascadeCount).toBe(1);
+    });
+
+    test('a pitched view engages the near cascade (2 active cascades, casters per cascade)', () => {
+        const r = new ShadowRenderer({} as any);
+        const {painter, tileManagers, coords, layerIds} = makePitchedPainter(16, [feLayer('a')]);
+        expect(r.beginFrame(painter, layerIds, tileManagers, coords)).toBe(true);
+        expect(allocatedMaps).toBe(2);           // near + far cascade maps
+        expect(casterCalls.length).toBe(2);       // the caster pass renders into each cascade
+        expect(r.getBuildingShadowFrame()!.cascadeCount).toBe(2);
+    });
+
+    test('REGRESSION: pitched mid-ramp — building receiver AND ground receiver are both live together', () => {
+        // The desync fix: at a pitched camera partway up the z14-15 height ramp, the building-roof
+        // receiver (fillExtrusionShadow variant) and the ground receiver must BOTH be active with a
+        // non-zero shared fade — driven by the SAME intensity, over the SAME (near+far) cascade set.
+        const r = new ShadowRenderer({} as any);
+        const {painter, tileManagers, coords, layerIds} = makePitchedPainter(14.6, [feLayer('a')]);
+        expect(r.beginFrame(painter, layerIds, tileManagers, coords)).toBe(true);
+
+        // Building-roof receiver: a real per-frame receiver frame with the pitch-gated near cascade.
+        const frame = r.getBuildingShadowFrame();
+        expect(frame).not.toBeNull();
+        expect(frame!.cascadeCount).toBe(2);
+        // Shared height-ramp fade is non-zero mid-ramp (z14.6): intensity = 0.32 * fade(14.6)=0.6 * 1.
+        expect(frame!.intensity).toBeGreaterThan(0);
+        expect(frame!.intensity).toBeCloseTo(0.32 * 0.6, 6);
+
+        // Ground receiver: the same layer owns the single ground draw and it emits an overlay (the
+        // ground draw early-outs when intensity <= 0, so a non-empty draw proves the shared fade > 0).
+        expect(r.isGroundOwner('a')).toBe(true);
+        r.drawGround(painter, coords['a']);
+        expect(groundCalls.length).toBe(1);
     });
 });
 

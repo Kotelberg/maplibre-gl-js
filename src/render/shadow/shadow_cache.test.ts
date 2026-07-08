@@ -164,8 +164,10 @@ describe('updateShadowFrame (Task-5 orchestration contract)', () => {
         const fs = createShadowFrustumState();
         const t = makeTransform(15.4);
         const frame = updateShadowFrame(fs, t, light);
-        expect(frame.cascades).toHaveLength(1);
-        expect(frame.cascadeCount).toBe(1);
+        // makeTransform pitches to 55° (> SHADOW_PITCH_GATE_DEG), so the native-Metal 2-cascade
+        // default engages the pitch-gated near cascade → 2 active cascades.
+        expect(frame.cascades).toHaveLength(2);
+        expect(frame.cascadeCount).toBe(2);
         expect(frame.mapSize).toBe(SHADOW_MAP_DEFAULT_SIZE);
         expect(frame.texelSize).toBeCloseTo(1 / SHADOW_MAP_DEFAULT_SIZE, 12);
         expect(frame.refitThisFrame).toBe(true); // first frame
