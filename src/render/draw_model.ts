@@ -9,6 +9,7 @@ import {modelUniformValues} from './program/model_program';
 import {coverSignature, readModelPlacements} from './model/model_placement';
 import {buildModelGeometry} from './model/model_geometry';
 import {ModelBloom} from './model/model_bloom';
+import {ModelGroundHalo} from './model/model_ground_halo';
 
 import type {Painter, RenderOptions} from './painter';
 import type {TileManager} from '../tile/tile_manager';
@@ -67,8 +68,12 @@ type ModelRenderState = {
     selectionEpoch: number;
     /** One-instance baked geometry for the selected feature's silhouette, or null. */
     selectionBuilt: BuiltModels | null;
+    /** The selected instance's placement (anchor + footprint size), for the ground halo. */
+    selectionInstance: PlacedInstance | null;
     /** The post-process (half-res mask target + composite program), lazily created. */
     bloom: ModelBloom | null;
+    /** The gold ground disc pooled under the selected model (fork-internal), lazily created. */
+    groundHalo: ModelGroundHalo | null;
 };
 
 const renderStates = new WeakMap<ModelStyleLayer, ModelRenderState>();
@@ -79,7 +84,8 @@ function getState(layer: ModelStyleLayer): ModelRenderState {
         state = {
             built: null, builtCoverSig: null, lastCoverSig: null, placementKey: null,
             featureCount: 0, registryVersion: -1, instances: [], builtEpoch: 0,
-            selectionId: null, selectionEpoch: -1, selectionBuilt: null, bloom: null
+            selectionId: null, selectionEpoch: -1, selectionBuilt: null, selectionInstance: null,
+            bloom: null, groundHalo: null
         };
         renderStates.set(layer, state);
     }
@@ -102,12 +108,15 @@ export function drawModel(painter: Painter, tileManager: TileManager, layer: Mod
     if (!state.built || state.built.groups.length === 0) {
         // Nothing to draw — also drop any lingering selection geometry.
         if (state.bloom) state.bloom.reset();
+        if (state.groundHalo) state.groundHalo.reset();
         return;
     }
 
-    // Fork-internal (HataHub): selection bloom. Draw the breathing halo UNDER the
-    // models (before `drawGroups`), gated to the selected instance's silhouette.
-    if (ensureSelection(painter, layer, state)) {
+    // Fork-internal (HataHub): selection cues. The SCREEN-SPACE bloom draws UNDER
+    // the models (before `drawGroups`); the GROUND HALO draws AFTER them (so the
+    // model body occludes the disc centre). Both are gated to the selected instance.
+    const selectionActive = ensureSelection(painter, layer, state);
+    if (selectionActive) {
         const bloom = state.bloom || (state.bloom = new ModelBloom());
         // 1. Half-res white silhouette mask of the selected instance.
         const prev = bloom.beginSilhouette(painter);
@@ -119,11 +128,23 @@ export function drawModel(painter: Painter, tileManager: TileManager, layer: Mod
         //    ONLY while something is selected — deselecting stops it, so an idle
         //    map with no selection issues zero repaints.
         painter.style.map.triggerRepaint();
-    } else if (state.bloom) {
-        state.bloom.reset();
+    } else {
+        if (state.bloom) state.bloom.reset();
+        if (state.groundHalo) state.groundHalo.reset();
     }
 
     drawGroups(painter, layer, state.built, opacity);
+
+    // Gold ground disc pooled under the selected model — drawn AFTER the bodies so
+    // the depth-written geometry occludes the disc centre and only the ring around
+    // the footprint shows (native's Vulkan selection halo; the mobile app's ground
+    // glow-rings). Complements the screen-space bloom above.
+    if (selectionActive && state.selectionInstance) {
+        const inst = state.selectionInstance;
+        const group = state.selectionBuilt!.groups[0];
+        const halo = state.groundHalo || (state.groundHalo = new ModelGroundHalo());
+        halo.draw(painter, layer, group.anchorFx, group.anchorFy, group.lat0, inst.scale * inst.footprint, opacity);
+    }
 }
 
 /**
@@ -142,12 +163,14 @@ function ensureSelection(painter: Painter, _layer: ModelStyleLayer, state: Model
             state.selectionBuilt.destroy();
             state.selectionBuilt = null;
         }
+        state.selectionInstance = null;
         if (selectedId !== null) {
             const chosen = state.instances.filter(
                 (inst) => inst.featureId !== undefined && String(inst.featureId) === String(selectedId)
             );
             if (chosen.length > 0) {
                 state.selectionBuilt = buildModelGeometry(painter.context, chosen, painter.style.modelManager);
+                state.selectionInstance = chosen[0];
             }
         }
         state.selectionId = selectedId;
