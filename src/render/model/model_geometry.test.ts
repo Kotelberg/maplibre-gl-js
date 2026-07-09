@@ -34,7 +34,7 @@ function getContext(): Context {
 }
 
 function instance(modelId: string | undefined): PlacedInstance {
-    return {fx: 0.5, fy: 0.5, modelId, scale: 10, rotation: 0, footprint: 1};
+    return {fx: 0.5, fy: 0.5, modelId, scale: 10, rotation: 0, footprint: 1, featureId: undefined};
 }
 
 describe('buildModelGeometry model resolution', () => {

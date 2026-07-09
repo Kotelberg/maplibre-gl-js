@@ -17,6 +17,12 @@ export type PlacedInstance = {
     scale: number;
     rotation: number;
     footprint: number;
+    /**
+     * The source feature's id (fork-internal: drives the selection bloom). Carried
+     * so `map.setModelSelection(featureId)` can pick out one instance's silhouette.
+     * `undefined` for features without an id (they can never be selected).
+     */
+    featureId: string | number | undefined;
 };
 
 export type ModelPlacements = {
@@ -139,7 +145,8 @@ export function readModelPlacements(
                         modelId: modelId === undefined || modelId === '' ? undefined : String(modelId),
                         scale: scaleProp.evaluate(evalFeature, {}, coord.canonical, availableImages),
                         rotation: rotationProp.evaluate(evalFeature, {}, coord.canonical, availableImages),
-                        footprint: footprintProp.evaluate(evalFeature, {}, coord.canonical, availableImages)
+                        footprint: footprintProp.evaluate(evalFeature, {}, coord.canonical, availableImages),
+                        featureId: feature.id
                     });
                 }
             }

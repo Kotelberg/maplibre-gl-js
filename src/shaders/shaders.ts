@@ -73,6 +73,9 @@ import skyFrag from './sky.fragment.glsl.g';
 import skyVert from './sky.vertex.glsl.g';
 import modelFrag from './model.fragment.glsl.g';
 import modelVert from './model.vertex.glsl.g';
+// Fork-internal (HataHub): model selection-bloom composite program.
+import modelBloomFrag from './model_bloom.fragment.glsl.g';
+import modelBloomVert from './model_bloom.vertex.glsl.g';
 import shadowDepthFrag from './shadow_depth.fragment.glsl.g';
 import shadowDepthVert from './shadow_depth.vertex.glsl.g';
 import groundShadowFrag from './ground_shadow.fragment.glsl.g';
@@ -131,6 +134,7 @@ export const shaders = {
     atmosphere: prepare(atmosphereFrag, atmosphereVert),
     sky: prepare(skyFrag, skyVert),
     model: prepare(modelFrag, modelVert),
+    modelBloom: prepare(modelBloomFrag, modelBloomVert),
     shadowDepth: prepare(shadowDepthFrag, shadowDepthVert),
     groundShadow: prepare(groundShadowFrag, groundShadowVert),
 };

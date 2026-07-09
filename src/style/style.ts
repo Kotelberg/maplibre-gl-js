@@ -210,6 +210,13 @@ export class Style extends Evented {
     imageManager: ImageManager;
     glyphManager: GlyphManager;
     modelManager: ModelManager;
+    /**
+     * Fork-internal (HataHub): the currently selected model feature id, or null.
+     * Drives the model-layer selection bloom (see `render/model/model_bloom.ts`).
+     * Never serialized — a transient view-state signal like feature-state, not
+     * style. Read by `drawModel` each frame to build the selected instance's halo.
+     */
+    _modelSelection: string | number | null;
     lineAtlas: LineAtlas;
     light: Light;
     projection: Projection | undefined;
@@ -264,6 +271,7 @@ export class Style extends Evented {
             this._changed = true;
             this.fire(new Event('data', {dataType: 'style'}));
         });
+        this._modelSelection = null;
         this.lineAtlas = new LineAtlas(256, 512);
         this.crossTileSymbolIndex = new CrossTileSymbolIndex();
 
@@ -1013,6 +1021,32 @@ export class Style extends Evented {
 
     listModels(): Array<string> {
         return this.modelManager.listModels();
+    }
+
+    /**
+     * Fork-internal (HataHub): select a model instance by its source feature id
+     * to paint the breathing selection halo, or pass `null` to clear it. Matched
+     * against the GeoJSON feature `id` carried through model placement — the same
+     * id convention the app's `selectBuilding(featureId)` flow already uses. A
+     * change invalidates the model layer's cached selection geometry (via the
+     * drawModel render-state) and repaints; while a selection is active the layer
+     * requests per-frame repaints so the halo breathes, and stops the moment it is
+     * cleared (idle cost is zero when nothing is selected).
+     */
+    setModelSelection(featureId: string | number | null) {
+        // Normalize undefined → null so getModelSelection has a single "no
+        // selection" value; treat 0/'' as valid ids (they are legal feature ids).
+        const next = featureId === undefined ? null : featureId;
+        if (this._modelSelection === next) return;
+        this._modelSelection = next;
+        // No _changed/style 'data' event: selection is transient view state, not a
+        // style mutation. A plain repaint is enough for drawModel to rebuild the
+        // selection silhouette and start (or stop) the breathing loop.
+        this.map.triggerRepaint();
+    }
+
+    getModelSelection(): string | number | null {
+        return this._modelSelection ?? null;
     }
 
     listImages() {
