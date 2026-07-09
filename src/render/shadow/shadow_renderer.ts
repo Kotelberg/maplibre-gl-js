@@ -53,7 +53,7 @@ export type BuildingShadowFrame = {
     /** The per-cascade packed-depth maps to bind to {@link SHADOWMAP_UNITS}. */
     maps: ShadowMap[];
     shadowmapUnits: [number, number, number, number];
-    /** Shipped §3.6 bias pair. */
+    /** Building-receiver §3.6 bias pair (constant, slope) — see the retune note in `beginFrame`. */
     bias: number;
     slopeBias: number;
 };
@@ -211,8 +211,19 @@ export class ShadowRenderer {
             intensity,
             maps: this.maps,
             shadowmapUnits: SHADOWMAP_UNITS,
-            bias: 0.0,
-            slopeBias: 0.05
+            // Building-receiver bias pair, retuned from native's 0.0/0.05 (measured, debug onset
+            // harness): the receiver bias is a fraction of the light frustum's depth extent, which is
+            // screen-bounded (~zoom-invariant in world px), while the caster-vs-receiver depth
+            // separation of real buildings grows as 2^zoom — so an oversized bias sets a hard "onset
+            // zoom" below which a neighbour's shadow can never land on a roof. Native's slope bias
+            // 0.05 kept roofs shadow-free until ~z16.5-17 while the (zero-bias) ground receiver showed
+            // the same shadows from the z14-15 fade-in — the ground/roof desync. 0.005 restores sync;
+            // the 0.001 constant covers the near-overhead-sun corner (v_slope -> 0 kills the slope
+            // term but the texel depth-quantization floor remains — slope-only 0.005 acnes at
+            // polar <= 10, and slope-only 0.00125 by polar 30). Acne-free across polar 10-80,
+            // z14.5-18, pitch 0/55, with roof onset == ground onset at every step.
+            bias: 0.001,
+            slopeBias: 0.005
         };
 
         // Site 3: ground-once ownership — the first FE layer with render tiles owns the ground draw.
@@ -242,7 +253,10 @@ export class ShadowRenderer {
             shadowMaps: this.frame.maps,
             shadowColor: SHADOW_COLOR,
             intensity: this.frame.intensity,
-            bias: this.frame.bias,
+            // Ground receiver keeps its own §3.6 constant-only bias of 0 (native parity): a z=0
+            // receiver never self-shadows, and the building retune above must not shift the
+            // ground-shadow contact away from wall bases.
+            bias: 0.0,
             // Fades disabled by default (the shader early-outs on 0); the fit does not yet emit them.
             fadeStart: 0,
             depthFadeStart: 0,

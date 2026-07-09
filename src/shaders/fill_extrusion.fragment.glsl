@@ -67,10 +67,15 @@ float fe_cascade(highp sampler2D tex, highp vec4 sp, int cIdx) {
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0) {
         return -1.0;
     }
-    // PER-CASCADE bias scale (§3.6): the far cascade covers a huge area (low texel density), so a flat
-    // roof still has a large light-space depth gradient across a texel under a grazing sun ->
-    // self-shadow acne. Ship the GL shader's actual constants 8.0 (near) / 4.0 (far) verbatim.
-    float biasScale = (cIdx < v_cascade_count - 1) ? 8.0 : 4.0;
+    // Bias scale (§3.6, retuned): a single 4.0 for every cascade. Native's per-cascade 8.0 (near) /
+    // 4.0 (far) pair was backwards for concentric cascades — the near cascade has ~2.5x the texel
+    // density of the far one (radius = far * split), so it needs LESS bias headroom, not 2x more.
+    // Because the receiver bias is a fraction of the light frustum's depth extent (screen-bounded,
+    // ~zoom-invariant in world px) while caster/receiver depth separation grows as 2^zoom, every
+    // excess bias factor directly delays the zoom at which a neighbour's shadow can land on a roof.
+    // Measured (debug onset harness, two-tower scene, polar 10-80, z14.5-18, pitch 0/55): 4.0 with
+    // the 0.001/0.005 bias pair is acne-free everywhere and onsets together with the ground receiver.
+    float biasScale = 4.0;
     float current = ndc.z - (u_shadow_bias + v_slope * u_shadow_slope_bias) * biasScale;
     float l = 0.0;
     for (int dy = 0; dy <= 1; ++dy) {

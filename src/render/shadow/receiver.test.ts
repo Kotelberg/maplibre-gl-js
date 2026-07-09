@@ -48,8 +48,13 @@ describe('receiver shader sources (spec §3 — verbatim invariants)', () => {
         expect(hasCode(feShadowFrag, 'return d < (0.5 / 255.0) ? 1.0 : d;')).toBe(true);
     });
 
-    test('§3.6 per-cascade bias uses the shipped 8.0 / 4.0 constants verbatim', () => {
-        expect(hasCode(feShadowFrag, 'float biasScale = (cIdx < v_cascade_count - 1) ? 8.0 : 4.0;')).toBe(true);
+    test('§3.6 bias uses the retuned uniform 4.0 scale (never the backwards 8x near-cascade lift)', () => {
+        // Retune rationale: bias is a fraction of the (screen-bounded, ~zoom-invariant) light-frustum
+        // depth extent, while building depth separation grows as 2^zoom — an oversized bias therefore
+        // delays roof-shadow onset behind the zero-bias ground receiver (the ground/roof desync). The
+        // near cascade is ~2.5x DENSER than the far one, so the old 8x near lift was backwards.
+        expect(hasCode(feShadowFrag, 'float biasScale = 4.0;')).toBe(true);
+        expect(feShadowFrag).not.toContain('? 8.0 : 4.0');
         expect(hasCode(feShadowFrag, 'float current = ndc.z - (u_shadow_bias + v_slope * u_shadow_slope_bias) * biasScale;')).toBe(true);
         // Ground receiver: constant-only bias, no slope / per-cascade scale.
         expect(hasCode(groundFrag, 'float current = ndc.z - u_shadow_bias;')).toBe(true);
@@ -134,9 +139,9 @@ function fePcfBilinear(sample: (u: number, v: number) => RGBA, uv: [number, numb
     return mix(mix(s00, s10, f[0]), mix(s01, s11, f[0]), f[1]);
 }
 
-/** The per-cascade bias scale (§3.6): near cascades 8x, far cascade 4x. */
-function biasScale(cIdx: number, cascadeCount: number): number {
-    return (cIdx < cascadeCount - 1) ? 8.0 : 4.0;
+/** The bias scale (§3.6, retuned): a uniform 4.0 for every cascade (see the shader-source test). */
+function biasScale(_cIdx: number, _cascadeCount: number): number {
+    return 4.0;
 }
 
 /** Pack a raw [0,1] depth into an 8-bit-quantized RGBA (the codec, so unpack sees texture bytes). */
@@ -180,25 +185,27 @@ describe('receiver PCF kernel (spec §3.6.1 — compare-first, then blend)', () 
     });
 });
 
-describe('per-cascade depth bias (spec §3.6)', () => {
-    test('near cascades scale bias 8x, the far cascade 4x', () => {
-        // 2-cascade config: cascade 0 (near) = 8x, cascade 1 (far) = 4x.
-        expect(biasScale(0, 2)).toBe(8.0);
+describe('per-cascade depth bias (spec §3.6, retuned)', () => {
+    test('every cascade scales bias by the same 4x (the old 8x near lift was backwards)', () => {
+        // 2-cascade config: the near cascade is ~2.5x denser than the far one, so it must never carry
+        // MORE bias — both use 4x.
+        expect(biasScale(0, 2)).toBe(4.0);
         expect(biasScale(1, 2)).toBe(4.0);
-        // 1-cascade default: the single cascade IS the far cascade ⇒ 4x.
+        // 1-cascade default: same 4x.
         expect(biasScale(0, 1)).toBe(4.0);
     });
 
-    test('bias subtracts (constant + slope*slopeBias)*scale from ndc.z (shipped 0.0 / 0.05)', () => {
-        const uShadowBias = 0.0, uSlopeBias = 0.05;
+    test('bias subtracts (constant + slope*slopeBias)*scale from ndc.z (retuned 0.001 / 0.005)', () => {
+        const uShadowBias = 0.001, uSlopeBias = 0.005;
         const ndcZ = 0.5;
-        // A grazing away-face (v_slope near 1) on a near cascade gets the largest lift.
+        // A grazing away-face (v_slope near 1) gets the largest lift.
         const vSlope = 1.0;
         const current = ndcZ - (uShadowBias + vSlope * uSlopeBias) * biasScale(0, 2);
-        expect(current).toBeCloseTo(0.5 - 0.05 * 8.0, 6); // 0.5 - 0.4 = 0.1
-        // A sun-facing face (v_slope = 0) gets no lift regardless of cascade — a neighbour's cast
-        // shadow still lands (the whole point of the slope term).
-        expect(ndcZ - (uShadowBias + 0.0 * uSlopeBias) * biasScale(0, 2)).toBe(ndcZ);
+        expect(current).toBeCloseTo(0.5 - (0.001 + 0.005) * 4.0, 6); // 0.5 - 0.024 = 0.476
+        // A sun-facing face (v_slope = 0) keeps the CONSTANT lift — the near-overhead-sun acne floor
+        // (texel depth quantization) does not vanish with the slope term, so the constant must not
+        // either (slope-only bias acnes roofs under a high sun).
+        expect(ndcZ - (uShadowBias + 0.0 * uSlopeBias) * biasScale(0, 2)).toBeCloseTo(0.5 - 0.001 * 4.0, 6);
     });
 });
 
