@@ -3,7 +3,8 @@ import {
     Uniform1i,
     Uniform1f,
     Uniform2f,
-    Uniform3f
+    Uniform3f,
+    UniformMatrix4fv
 } from '../uniform_binding';
 
 import {mat3, vec3} from 'gl-matrix';
@@ -117,9 +118,90 @@ const fillExtrusionPatternUniformValues = (
         });
 };
 
+// ---------------------------------------------------------------------------------------------
+// Shadow-receiver variant (spec §3). The `fillExtrusionShadow` program shares the fill-extrusion
+// .glsl source (compiled with `#define RENDER_SHADOWS`) but binds an EXTENDED uniform set: the base
+// FE lighting uniforms PLUS the per-cascade light matrices + the shadow sampler / bias / intensity
+// controls the receiver fragment shader reads. Task 5 (painter integration) supplies the per-frame
+// values via {@link fillExtrusionShadowUniformValues}.
+// ---------------------------------------------------------------------------------------------
+
+export type FillExtrusionShadowUniformsType = FillExtrusionUniformsType & {
+    // Vertex: per-cascade `tile-local -> light-clip` matrices (near->far; flattened mat4[4]) + count.
+    'u_light_matrix': UniformMatrix4fv;
+    'u_cascade_count': Uniform1i;
+    // Fragment: the four packed-depth cascade samplers (static-sampler if-chain, §3.9).
+    'u_shadowmap0': Uniform1i;
+    'u_shadowmap1': Uniform1i;
+    'u_shadowmap2': Uniform1i;
+    'u_shadowmap3': Uniform1i;
+    // Fragment: strength + PCF texel size + the §3.6 bias pair.
+    'u_shadow_intensity': Uniform1f;
+    'u_shadow_texel_size': Uniform1f;
+    'u_shadow_bias': Uniform1f;
+    'u_shadow_slope_bias': Uniform1f;
+};
+
+/**
+ * The per-frame shadow inputs Task 5 threads into the building receiver draw.
+ * `lightMatrices` is a flattened `Float32Array` of `16 * cascadeCount` (up to 4) cascade matrices,
+ * each the per-tile `tile-local → light-clip` transform. `intensity` is the evaluated
+ * `shadow-intensity` ALREADY multiplied by `shadowHeightFade(zoom)` and the `shadowMapUsable` gate
+ * (§3.11 / §3.3.3) — the receiver applies it verbatim. `bias`/`slopeBias` are the shipped `0.0`/`0.05`
+ * (§3.6). `shadowmapUnits` are the texture units the four cascade maps are bound to (default 0..3).
+ */
+export type FillExtrusionShadowParams = {
+    lightMatrices: Float32Array;
+    cascadeCount: number;
+    intensity: number;
+    texelSize: number;
+    bias: number;
+    slopeBias: number;
+    shadowmapUnits: [number, number, number, number];
+};
+
+const fillExtrusionShadowUniforms = (context: Context, locations: UniformLocations): FillExtrusionShadowUniformsType => ({
+    ...fillExtrusionUniforms(context, locations),
+    'u_light_matrix': new UniformMatrix4fv(context, locations.u_light_matrix),
+    'u_cascade_count': new Uniform1i(context, locations.u_cascade_count),
+    'u_shadowmap0': new Uniform1i(context, locations.u_shadowmap0),
+    'u_shadowmap1': new Uniform1i(context, locations.u_shadowmap1),
+    'u_shadowmap2': new Uniform1i(context, locations.u_shadowmap2),
+    'u_shadowmap3': new Uniform1i(context, locations.u_shadowmap3),
+    'u_shadow_intensity': new Uniform1f(context, locations.u_shadow_intensity),
+    'u_shadow_texel_size': new Uniform1f(context, locations.u_shadow_texel_size),
+    'u_shadow_bias': new Uniform1f(context, locations.u_shadow_bias),
+    'u_shadow_slope_bias': new Uniform1f(context, locations.u_shadow_slope_bias),
+});
+
+const fillExtrusionShadowUniformValues = (
+    painter: Painter,
+    shouldUseVerticalGradient: boolean,
+    opacity: number,
+    translate: [number, number],
+    shadow: FillExtrusionShadowParams,
+): UniformValues<FillExtrusionShadowUniformsType> => {
+    return extend(
+        fillExtrusionUniformValues(painter, shouldUseVerticalGradient, opacity, translate),
+        {
+            'u_light_matrix': shadow.lightMatrices,
+            'u_cascade_count': shadow.cascadeCount,
+            'u_shadowmap0': shadow.shadowmapUnits[0],
+            'u_shadowmap1': shadow.shadowmapUnits[1],
+            'u_shadowmap2': shadow.shadowmapUnits[2],
+            'u_shadowmap3': shadow.shadowmapUnits[3],
+            'u_shadow_intensity': shadow.intensity,
+            'u_shadow_texel_size': shadow.texelSize,
+            'u_shadow_bias': shadow.bias,
+            'u_shadow_slope_bias': shadow.slopeBias,
+        });
+};
+
 export {
     fillExtrusionUniforms,
     fillExtrusionPatternUniforms,
     fillExtrusionUniformValues,
-    fillExtrusionPatternUniformValues
+    fillExtrusionPatternUniformValues,
+    fillExtrusionShadowUniforms,
+    fillExtrusionShadowUniformValues
 };

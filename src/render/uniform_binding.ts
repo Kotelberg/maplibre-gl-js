@@ -175,6 +175,28 @@ class UniformMatrix4f extends Uniform<mat4> {
     }
 }
 
+/**
+ * A `mat4[]` uniform (a fixed-length array of 4x4 matrices), passed as a single flattened
+ * `Float32Array` of length `16 * count`. Used for the per-cascade shadow light-clip matrices
+ * (`u_shadowmap`/`u_light_matrix[4]`); the location is that of the array's first element (queried by
+ * base name, e.g. `u_light_matrix`).
+ */
+class UniformMatrix4fv extends Uniform<Float32Array> {
+    constructor(context: Context, location: WebGLUniformLocation) {
+        super(context, location);
+        this.current = new Float32Array(0);
+    }
+
+    set(v: Float32Array): void {
+        // Reference-compare only: the caller passes a freshly-built flattened array each frame (the
+        // per-cascade matrices change together), so an element-wise diff would rarely help.
+        if (v !== this.current) {
+            this.current = v;
+            this.gl.uniformMatrix4fv(this.location, false, v);
+        }
+    }
+}
+
 export {
     Uniform,
     Uniform1i,
@@ -185,7 +207,8 @@ export {
     UniformColor,
     UniformColorArray,
     UniformFloatArray,
-    UniformMatrix4f
+    UniformMatrix4f,
+    UniformMatrix4fv
 };
 
 /**

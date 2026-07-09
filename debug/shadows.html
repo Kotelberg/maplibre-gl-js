@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug — fill-extrusion cast shadows</title>
+    <meta charset='utf-8'>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <link rel='stylesheet' href='../dist/maplibre-gl.css' />
+    <style>
+        body { margin: 0; padding: 0; font-family: sans-serif; }
+        html, body, #map { height: 100%; }
+        #panel {
+            position: absolute; top: 10px; left: 10px; z-index: 2;
+            background: rgba(255,255,255,0.92); padding: 10px 12px; border-radius: 6px;
+            font-size: 12px; line-height: 1.9; box-shadow: 0 1px 4px rgba(0,0,0,.3);
+        }
+        #panel button { font-size: 12px; margin: 0 2px; }
+        #panel label { display: inline-block; min-width: 78px; }
+        #hud { color: #333; font-variant-numeric: tabular-nums; }
+    </style>
+</head>
+<body>
+<div id='map'></div>
+<div id='panel'>
+    <div><button id='toggle'>shadows: ON</button>
+         <button id='rot'>rotate +30°</button>
+         <button id='pitchBtn'>pitch 55/0</button></div>
+    <div><button id='rampBtn'>height: DATA</button>
+         <button id='refitBtn'>ramp-refit: ON</button>
+         <button id='rampZoom'>ramp z13.5↔15.5</button></div>
+    <div><label>intensity</label><input id='intensity' type='range' min='0' max='1' step='0.02' value='0.5'> <span id='intensityV'>0.50</span></div>
+    <div><label>sun azimuth</label><input id='azimuth' type='range' min='0' max='360' step='5' value='210'> <span id='azimuthV'>210</span></div>
+    <div><label>sun polar</label><input id='polar' type='range' min='0' max='90' step='2' value='45'> <span id='polarV'>45</span></div>
+    <div id='hud'></div>
+</div>
+<script src='../dist/maplibre-gl-dev.js'></script>
+<script>
+/* eslint-disable */
+// A deterministic, network-free block of 3D "buildings": a grid of boxes with varied heights around a
+// Kyiv coordinate, so the caster/receiver can be exercised without a vector tile source or API key.
+const CENTER = [30.5234, 50.4501];
+const METERS_PER_DEG_LAT = 111320;
+function metersToDeg(dxM, dyM, lat) {
+    const dLat = dyM / METERS_PER_DEG_LAT;
+    const dLng = dxM / (METERS_PER_DEG_LAT * Math.cos(lat * Math.PI / 180));
+    return [dLng, dLat];
+}
+function box(cx, cy, w, d, height) {
+    // cx,cy in meters from CENTER; w,d footprint size in meters; height in meters.
+    const corners = [[-w/2,-d/2],[w/2,-d/2],[w/2,d/2],[-w/2,d/2],[-w/2,-d/2]];
+    const ring = corners.map(([ox, oy]) => {
+        const [dLng, dLat] = metersToDeg(cx + ox, cy + oy, CENTER[1]);
+        return [CENTER[0] + dLng, CENTER[1] + dLat];
+    });
+    return {type: 'Feature', properties: {height}, geometry: {type: 'Polygon', coordinates: [ring]}};
+}
+// A 4x4 grid with a tall tower in the middle so neighbours receive its cast shadow on their roofs.
+const features = [];
+const heights = [
+    [18, 12, 40, 14],
+    [10, 60, 16, 22],
+    [24, 14, 90, 12],
+    [12, 30, 12, 20],
+];
+const spacing = 55; // meters between box centers
+for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 4; c++) {
+        const cx = (c - 1.5) * spacing;
+        const cy = (1.5 - r) * spacing;
+        features.push(box(cx, cy, 34, 34, heights[r][c]));
+    }
+}
+const buildings = {type: 'FeatureCollection', features};
+
+let shadowsOn = true;
+let bearing = 0;
+let pitch = 55;
+
+const map = new maplibregl.Map({
+    container: 'map',
+    style: {
+        version: 8,
+        // A neutral flat basemap so the ground shadow is clearly visible.
+        sources: {
+            buildings: {type: 'geojson', data: buildings}
+        },
+        light: {
+            anchor: 'map',
+            position: [1.5, 210, 45],
+            intensity: 0.5,
+            'cast-shadows': true,
+            'shadow-intensity': 0.5
+        },
+        layers: [
+            {id: 'bg', type: 'background', paint: {'background-color': '#d7d2c8'}},
+            {
+                id: 'buildings-3d', type: 'fill-extrusion', source: 'buildings',
+                paint: {
+                    'fill-extrusion-color': '#c8b89a',
+                    'fill-extrusion-height': ['get', 'height'],
+                    'fill-extrusion-base': 0,
+                    'fill-extrusion-opacity': 1.0,
+                    'fill-extrusion-vertical-gradient': true
+                }
+            }
+        ]
+    },
+    center: CENTER,
+    zoom: 16.5,
+    pitch: pitch,
+    bearing: bearing,
+    antialias: true
+});
+
+const hud = document.getElementById('hud');
+function updateHud() {
+    hud.textContent = `zoom ${map.getZoom().toFixed(2)}  bearing ${map.getBearing().toFixed(0)}  pitch ${map.getPitch().toFixed(0)}  shadows ${shadowsOn ? 'on' : 'off'}`;
+}
+map.on('move', updateHud);
+map.on('load', updateHud);
+
+document.getElementById('toggle').onclick = () => {
+    shadowsOn = !shadowsOn;
+    map.setLight({...map.getLight(), 'cast-shadows': shadowsOn});
+    document.getElementById('toggle').textContent = 'shadows: ' + (shadowsOn ? 'ON' : 'OFF');
+    updateHud();
+};
+document.getElementById('rot').onclick = () => {
+    bearing = (bearing + 30) % 360;
+    map.rotateTo(bearing, {duration: 0});
+    updateHud();
+};
+document.getElementById('pitchBtn').onclick = () => {
+    pitch = pitch === 55 ? 0 : 55;
+    map.setPitch(pitch);
+    updateHud();
+};
+function setLightFromControls() {
+    const az = +document.getElementById('azimuth').value;
+    const pol = +document.getElementById('polar').value;
+    const inten = +document.getElementById('intensity').value;
+    document.getElementById('azimuthV').textContent = az;
+    document.getElementById('polarV').textContent = pol;
+    document.getElementById('intensityV').textContent = inten.toFixed(2);
+    map.setLight({anchor: 'map', position: [1.5, az, pol], intensity: 0.5, 'cast-shadows': shadowsOn, 'shadow-intensity': inten});
+}
+for (const id of ['azimuth', 'polar', 'intensity']) {
+    document.getElementById(id).oninput = setLightFromControls;
+}
+// --- §3.11 height-ramp harness ---------------------------------------------------------------
+// DATA height (`['get','height']`) is zoom-constant: buildings are full height at every zoom.
+// RAMP height interpolates 0 → full across z14→z15 (the "grow-in" ramp), so the caster geometry is
+// zoom-DEPENDENT and the sticky shadow cache must force per-frame refits through the band, else the
+// shadows render against the last refit frame's stale heights.
+const DATA_HEIGHT = ['get', 'height'];
+const RAMP_HEIGHT = ['interpolate', ['linear'], ['zoom'], 14, 0, 15, ['get', 'height']];
+let rampOn = false;
+document.getElementById('rampBtn').onclick = () => {
+    rampOn = !rampOn;
+    map.setPaintProperty('buildings-3d', 'fill-extrusion-height', rampOn ? RAMP_HEIGHT : DATA_HEIGHT);
+    document.getElementById('rampBtn').textContent = 'height: ' + (rampOn ? 'RAMP' : 'DATA');
+    updateHud();
+};
+// A/B escape hatch: OFF reproduces the defect (sticky cache NOT force-refit through the ramp).
+let refitOn = true;
+document.getElementById('refitBtn').onclick = () => {
+    refitOn = !refitOn;
+    if (map.painter.shadowRenderer) map.painter.shadowRenderer.heightRampRefitDisabled = !refitOn;
+    document.getElementById('refitBtn').textContent = 'ramp-refit: ' + (refitOn ? 'ON' : 'OFF');
+    updateHud();
+};
+// Keep the escape-hatch applied even after the renderer is (re)created on a later frame.
+map.on('render', () => {
+    if (map.painter.shadowRenderer) map.painter.shadowRenderer.heightRampRefitDisabled = !refitOn;
+});
+document.getElementById('rampZoom').onclick = () => {
+    const z = map.getZoom();
+    map.easeTo({zoom: z < 14.5 ? 15.5 : 13.5, duration: 3000});
+};
+window._map = map;
+</script>
+</body>
+</html>

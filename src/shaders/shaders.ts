@@ -73,6 +73,10 @@ import skyFrag from './sky.fragment.glsl.g';
 import skyVert from './sky.vertex.glsl.g';
 import modelFrag from './model.fragment.glsl.g';
 import modelVert from './model.vertex.glsl.g';
+import shadowDepthFrag from './shadow_depth.fragment.glsl.g';
+import shadowDepthVert from './shadow_depth.vertex.glsl.g';
+import groundShadowFrag from './ground_shadow.fragment.glsl.g';
+import groundShadowVert from './ground_shadow.vertex.glsl.g';
 
 export type PreparedShader = {
     fragmentSource: string;
@@ -101,6 +105,13 @@ export const shaders = {
     fillOutlinePattern: prepare(fillOutlinePatternFrag, fillOutlinePatternVert),
     fillPattern: prepare(fillPatternFrag, fillPatternVert),
     fillExtrusion: prepare(fillExtrusionFrag, fillExtrusionVert),
+    // Shadow-receiver variant of the fill-extrusion program: SAME .glsl source, compiled with the
+    // `#define RENDER_SHADOWS` variant (passed via useProgram's `defines`) and its own extended
+    // uniform binder (spec §3.1). Registered as a distinct program *name* — not just a define on
+    // `fillExtrusion` — because gl-js keys the uniform binder by program name, and the receiver's
+    // extra vec/mat uniforms must never be `.set(undefined)` on the stock path. This keeps the stock
+    // `fillExtrusion` program byte-identical for the default-off gate (§3.0).
+    fillExtrusionShadow: prepare(fillExtrusionFrag, fillExtrusionVert),
     fillExtrusionPattern: prepare(fillExtrusionPatternFrag, fillExtrusionPatternVert),
     hillshadePrepare: prepare(hillshadePrepareFrag, hillshadePrepareVert),
     hillshade: prepare(hillshadeFrag, hillshadeVert),
@@ -120,6 +131,8 @@ export const shaders = {
     atmosphere: prepare(atmosphereFrag, atmosphereVert),
     sky: prepare(skyFrag, skyVert),
     model: prepare(modelFrag, modelVert),
+    shadowDepth: prepare(shadowDepthFrag, shadowDepthVert),
+    groundShadow: prepare(groundShadowFrag, groundShadowVert),
 };
 
 /** Expand #pragmas to #ifdefs, extract attributes and uniforms */
