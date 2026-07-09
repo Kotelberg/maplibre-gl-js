@@ -36,6 +36,8 @@ export class StubMap extends Evented {
     setTerrain(terrain) { this._terrain = terrain; }
     getTerrain() { return this._terrain; }
 
+    triggerRepaint() { /* no-op stub */ }
+
     migrateProjection(newTransform: ITransform) {
         newTransform.apply(this.transform, true);
         this.transform = newTransform;

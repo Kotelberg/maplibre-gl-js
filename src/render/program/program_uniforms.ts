@@ -16,6 +16,7 @@ import {projectionErrorMeasurementUniforms} from './projection_error_measurement
 import {atmosphereUniforms} from './atmosphere_program';
 import {skyUniforms} from './sky_program';
 import {modelUniforms} from './model_program';
+import {modelBloomUniforms} from './model_bloom_program';
 import {shadowDepthUniforms} from './shadow_depth_program';
 
 const emptyUniforms = (_: any, __: any): any => {};
@@ -57,6 +58,7 @@ export const programUniforms = {
     atmosphere: atmosphereUniforms,
     sky: skyUniforms,
     model: modelUniforms,
+    modelBloom: modelBloomUniforms,
     shadowDepth: shadowDepthUniforms,
     groundShadow: groundShadowUniforms
 };
