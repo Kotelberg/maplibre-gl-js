@@ -8,11 +8,14 @@ import {clamp} from '../util/util';
 import {modelUniformValues} from './program/model_program';
 import {coverSignature, readModelPlacements} from './model/model_placement';
 import {buildModelGeometry} from './model/model_geometry';
+import {ModelBloom} from './model/model_bloom';
+import {ModelGroundHalo} from './model/model_ground_halo';
 
 import type {Painter, RenderOptions} from './painter';
 import type {TileManager} from '../tile/tile_manager';
 import type {ModelStyleLayer} from '../style/style_layer/model_style_layer';
 import type {OverscaledTileID} from '../tile/tile_id';
+import type {PlacedInstance} from './model/model_placement';
 import type {BuiltModels, BuiltGroup, BuiltPart} from './model/model_geometry';
 import type {Mesh} from './mesh';
 import type {Context} from '../gl/context';
@@ -52,6 +55,25 @@ type ModelRenderState = {
     placementKey: string | null;
     featureCount: number;
     registryVersion: number;
+    /** The last placement set, retained so the selected instance can be re-baked
+     * into its own silhouette geometry on selection change (fork-internal bloom). */
+    instances: PlacedInstance[];
+    /** Increments on every base-geometry rebuild; the selection silhouette
+     * re-bakes when its epoch falls behind (placements may have moved). */
+    builtEpoch: number;
+    // ── Fork-internal (HataHub) selection-bloom fields ──
+    /** The feature id whose silhouette `selectionBuilt` currently holds. */
+    selectionId: string | number | null;
+    /** The `builtEpoch` the current `selectionBuilt` was baked against. */
+    selectionEpoch: number;
+    /** One-instance baked geometry for the selected feature's silhouette, or null. */
+    selectionBuilt: BuiltModels | null;
+    /** The selected instance's placement (anchor + footprint size), for the ground halo. */
+    selectionInstance: PlacedInstance | null;
+    /** The post-process (half-res mask target + composite program), lazily created. */
+    bloom: ModelBloom | null;
+    /** The gold ground disc pooled under the selected model (fork-internal), lazily created. */
+    groundHalo: ModelGroundHalo | null;
 };
 
 const renderStates = new WeakMap<ModelStyleLayer, ModelRenderState>();
@@ -59,7 +81,12 @@ const renderStates = new WeakMap<ModelStyleLayer, ModelRenderState>();
 function getState(layer: ModelStyleLayer): ModelRenderState {
     let state = renderStates.get(layer);
     if (!state) {
-        state = {built: null, builtCoverSig: null, lastCoverSig: null, placementKey: null, featureCount: 0, registryVersion: -1};
+        state = {
+            built: null, builtCoverSig: null, lastCoverSig: null, placementKey: null,
+            featureCount: 0, registryVersion: -1, instances: [], builtEpoch: 0,
+            selectionId: null, selectionEpoch: -1, selectionBuilt: null, selectionInstance: null,
+            bloom: null, groundHalo: null
+        };
         renderStates.set(layer, state);
     }
     return state;
@@ -78,9 +105,106 @@ export function drawModel(painter: Painter, tileManager: TileManager, layer: Mod
 
     ensureGeometry(painter, tileManager, layer, coords, state, registryVersion);
 
-    if (!state.built || state.built.groups.length === 0) return;
+    if (!state.built || state.built.groups.length === 0) {
+        // Nothing to draw — also drop any lingering selection geometry.
+        if (state.bloom) state.bloom.reset();
+        if (state.groundHalo) state.groundHalo.reset();
+        return;
+    }
+
+    // Fork-internal (HataHub): selection cues. The SCREEN-SPACE bloom draws UNDER
+    // the models (before `drawGroups`); the GROUND HALO draws AFTER them (so the
+    // model body occludes the disc centre). Both are gated to the selected instance.
+    const selectionActive = ensureSelection(painter, layer, state);
+    if (selectionActive) {
+        const bloom = state.bloom || (state.bloom = new ModelBloom());
+        // 1. Half-res white silhouette mask of the selected instance.
+        const prev = bloom.beginSilhouette(painter);
+        drawSilhouette(painter, layer, state.selectionBuilt!, bloom);
+        bloom.endSilhouette(painter, prev);
+        // 2. Composite the blurred, breathing #FDB912 halo onto the main target.
+        bloom.composite(painter, opacity);
+        // 3. Breathe: request the next frame so the pulse animates. This loop runs
+        //    ONLY while something is selected — deselecting stops it, so an idle
+        //    map with no selection issues zero repaints.
+        painter.style.map.triggerRepaint();
+    } else {
+        if (state.bloom) state.bloom.reset();
+        if (state.groundHalo) state.groundHalo.reset();
+    }
 
     drawGroups(painter, layer, state.built, opacity);
+
+    // Gold ground disc pooled under the selected model — drawn AFTER the bodies so
+    // the depth-written geometry occludes the disc centre and only the ring around
+    // the footprint shows (native's Vulkan selection halo; the mobile app's ground
+    // glow-rings). Complements the screen-space bloom above.
+    if (selectionActive && state.selectionInstance) {
+        const inst = state.selectionInstance;
+        const group = state.selectionBuilt!.groups[0];
+        const halo = state.groundHalo || (state.groundHalo = new ModelGroundHalo());
+        halo.draw(painter, layer, group.anchorFx, group.anchorFy, group.lat0, inst.scale * inst.footprint, opacity);
+    }
+}
+
+/**
+ * Fork-internal (HataHub): reconcile the selection silhouette geometry with the
+ * current `map.setModelSelection(...)` id. Re-bakes a ONE-instance
+ * `BuiltModels` for the selected feature whenever the selection changes or the
+ * base geometry rebuilt under it (placements may have moved). Returns whether a
+ * drawable silhouette exists for this frame.
+ */
+function ensureSelection(painter: Painter, _layer: ModelStyleLayer, state: ModelRenderState): boolean {
+    const selectedId = painter.style.getModelSelection();
+    const needsRebuild = selectedId !== state.selectionId || state.selectionEpoch !== state.builtEpoch;
+
+    if (needsRebuild) {
+        if (state.selectionBuilt) {
+            state.selectionBuilt.destroy();
+            state.selectionBuilt = null;
+        }
+        state.selectionInstance = null;
+        if (selectedId !== null) {
+            const chosen = state.instances.filter(
+                (inst) => inst.featureId !== undefined && String(inst.featureId) === String(selectedId)
+            );
+            if (chosen.length > 0) {
+                state.selectionBuilt = buildModelGeometry(painter.context, chosen, painter.style.modelManager);
+                state.selectionInstance = chosen[0];
+            }
+        }
+        state.selectionId = selectedId;
+        state.selectionEpoch = state.builtEpoch;
+    }
+
+    return !!state.selectionBuilt && state.selectionBuilt.groups.length > 0;
+}
+
+/**
+ * Fork-internal (HataHub): draw the selected instance's model parts SOLID WHITE
+ * into the currently-bound (half-res) mask target, reusing the `model` program
+ * and the per-frame group matrix (so the silhouette tracks the model's grow ramp
+ * exactly). Flat (untextured) white → the fragment outputs `u_color`; unblended
+ * Replace → any covered texel becomes (1,1,1,1); coverage is read from `.r`.
+ * Contact shadows are intentionally excluded — only the model body silhouettes.
+ */
+function drawSilhouette(painter: Painter, layer: ModelStyleLayer, built: BuiltModels, bloom: ModelBloom) {
+    const context = painter.context;
+    const transform = painter.transform;
+    const worldSize = transform.worldSize;
+    const grow = growFactor(transform.zoom);
+    const program = painter.useProgram('model', null, true);
+
+    for (const group of built.groups) {
+        const matrix = groupMatrix(mat4.create(), transform.modelViewProjectionMatrix as mat4, group, worldSize, grow);
+        for (const part of group.parts) {
+            drawMesh(
+                program, context, painter, layer, part.mesh, matrix,
+                bloom.silhouetteColor, false,
+                bloom.silhouetteDepthMode, bloom.silhouetteStencilMode, bloom.silhouetteColorMode
+            );
+        }
+    }
 }
 
 /**
@@ -122,6 +246,10 @@ function ensureGeometry(
         state.built = buildModelGeometry(painter.context, placements.instances, painter.style.modelManager);
         state.placementKey = placements.placementKey;
         state.featureCount = placements.instances.length;
+        state.instances = placements.instances;
+        // A rebuild may have moved/added/removed placements: force the selection
+        // silhouette to re-bake against the fresh instance set (fork-internal).
+        state.builtEpoch++;
     }
     state.builtCoverSig = coverSig;
     state.registryVersion = registryVersion;
