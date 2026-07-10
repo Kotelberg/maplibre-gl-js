@@ -68,7 +68,7 @@ type ModelRenderState = {
     selectionEpoch: number;
     /** One-instance baked geometry for the selected feature's silhouette, or null. */
     selectionBuilt: BuiltModels | null;
-    /** The selected instance's placement (anchor + footprint size), for the ground halo. */
+    /** The selected instance's placement (anchor presence gate), for the ground halo. */
     selectionInstance: PlacedInstance | null;
     /** The post-process (half-res mask target + composite program), lazily created. */
     bloom: ModelBloom | null;
@@ -136,14 +136,13 @@ export function drawModel(painter: Painter, tileManager: TileManager, layer: Mod
     drawGroups(painter, layer, state.built, opacity);
 
     // Gold ground disc pooled under the selected model — drawn AFTER the bodies so
-    // the depth-written geometry occludes the disc centre and only the ring around
-    // the footprint shows (native's Vulkan selection halo; the mobile app's ground
-    // glow-rings). Complements the screen-space bloom above.
+    // the depth-written geometry occludes the disc centre and only the rings around
+    // the footprint show (the mobile app's ground glow-rings: fixed 105/85/68 m
+    // circles, NOT footprint-scaled). Complements the screen-space bloom above.
     if (selectionActive && state.selectionInstance) {
-        const inst = state.selectionInstance;
         const group = state.selectionBuilt!.groups[0];
         const halo = state.groundHalo || (state.groundHalo = new ModelGroundHalo());
-        halo.draw(painter, layer, group.anchorFx, group.anchorFy, group.lat0, inst.scale * inst.footprint, opacity);
+        halo.draw(painter, layer, group.anchorFx, group.anchorFy, group.lat0, opacity);
     }
 }
 

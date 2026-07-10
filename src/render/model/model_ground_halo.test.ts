@@ -2,7 +2,7 @@ import {describe, expect, test} from 'vitest';
 import {
     getGroundHaloImage,
     groundHaloPulse,
-    GROUND_HALO_RADIUS_FACTOR,
+    GROUND_HALO_OUTER_RADIUS_METERS,
     GROUND_HALO_LIFT_METERS,
     GROUND_HALO_BASE_INTENSITY,
     GROUND_HALO_PULSE_AMP,
@@ -55,19 +55,19 @@ describe('getGroundHaloImage', () => {
         expect(maxA).toBe(94);
     });
 
-    test('is premultiplied gold everywhere (rgb <= alpha, gold ratios)', () => {
+    test('is STRAIGHT-ALPHA gold everywhere (constant rgb; coverage only in alpha)', () => {
+        // The Texture upload sets UNPACK_PREMULTIPLY_ALPHA_WEBGL, so the GPU
+        // premultiplies once at upload. Baking premultiplied data here would
+        // premultiply twice (gold×α²) — the grey-olive-ring regression. Lock the
+        // straight-alpha invariant: rgb is the constant gold, never alpha-scaled.
+        // Aggregate violations into one assertion (262k per-pixel expects time out).
+        const [R, G, B] = GROUND_HALO_COLOR.map((c) => Math.round(c * 255)); // 253,185,18
+        let violations = 0;
         for (let i = 0; i < image.data.length; i += 4) {
-            const [r, g, b, a] = [image.data[i], image.data[i + 1], image.data[i + 2], image.data[i + 3]];
-            // Premultiplied: each channel is colour×alpha, and #FDB912 channels are ≤ 1.
-            expect(r).toBeLessThanOrEqual(a);
-            expect(g).toBeLessThanOrEqual(a);
-            expect(b).toBeLessThanOrEqual(a);
-            // Gold ordering R > G > B holds wherever there is any coverage.
-            if (a > 4) {
-                expect(r).toBeGreaterThanOrEqual(g);
-                expect(g).toBeGreaterThanOrEqual(b);
-            }
+            if (image.data[i] !== R || image.data[i + 1] !== G || image.data[i + 2] !== B) violations++;
         }
+        expect(violations).toBe(0);
+        expect([R, G, B]).toEqual([253, 185, 18]); // #FDB912
     });
 
     test('rings match the mobile app GLOW_RINGS (outer→inner, fainter→brighter)', () => {
@@ -93,7 +93,7 @@ describe('groundHaloPulse', () => {
     });
 
     test('tuning constants match the mobile app', () => {
-        expect(GROUND_HALO_RADIUS_FACTOR).toBe(1.7);
+        expect(GROUND_HALO_OUTER_RADIUS_METERS).toBe(105); // fixed meters — mobile GLOW_RINGS[0] 0.105 km, NOT footprint-relative
         expect(GROUND_HALO_LIFT_METERS).toBe(0.05);
         expect(GROUND_HALO_BASE_INTENSITY).toBe(1.0);
         expect(GROUND_HALO_PULSE_AMP).toBe(0.35);

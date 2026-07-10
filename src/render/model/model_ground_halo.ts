@@ -40,8 +40,14 @@ import type {ModelStyleLayer} from '../../style/style_layer/model_style_layer';
 
 // ── Ground-halo tuning — the mobile app's concentric selection rings ──
 //    (`apps/mobile/.../model-buildings-layer.tsx`, `GLOW_RINGS` + `PULSE_*`) ──
-/** Halo half-extent = model footprint size × this. The outer ring rides the quad edge. */
-export const GROUND_HALO_RADIUS_FACTOR = 1.7;
+/**
+ * Halo half-extent — FIXED ground meters, the mobile app's outer disc radius
+ * (`GLOW_RINGS[0].radiusKm` = 0.105 km). The app's rings are absolute geo
+ * circles, NOT footprint-relative: 105/85/68 m regardless of model size — a
+ * footprint-scaled quad blew the rings up to city-block scale on large
+ * apartment models. The outer ring rides the quad edge.
+ */
+export const GROUND_HALO_OUTER_RADIUS_METERS = 105;
 /** Lift off the ground plane, in meters, to dodge z-fighting. */
 export const GROUND_HALO_LIFT_METERS = 0.05;
 /** Breathing midpoint — mobile multiplies each disc's fill-opacity by 1 at rest. */
@@ -50,7 +56,7 @@ export const GROUND_HALO_BASE_INTENSITY = 1.0;
 export const GROUND_HALO_PULSE_AMP = 0.35;
 /** Breathing period in seconds — the mobile app's ~1.8 s pulse. */
 export const GROUND_HALO_PULSE_PERIOD_S = 1.8;
-/** Glow colour #FDB912. The baked texture is premultiplied gold. */
+/** Glow colour #FDB912. Baked straight-alpha; premultiplied once at GPU upload. */
 export const GROUND_HALO_COLOR: [number, number, number] = [0.992, 0.725, 0.071];
 /**
  * The mobile app's three concentric discs, as fractions of the OUTER radius and
@@ -100,6 +106,13 @@ export function groundHaloPulse(elapsedSeconds: number): number {
  * nested discs, never a box). At runtime the read-only depth test lets the
  * building occlude the bright core, leaving the stepped rings hugging the
  * footprint — the "several disks" the mobile app shows. Cached (view-independent).
+ *
+ * STRAIGHT-ALPHA on purpose: the `Texture` upload path sets
+ * `UNPACK_PREMULTIPLY_ALPHA_WEBGL` (see `premultiply: true` at the draw site),
+ * so the GPU premultiplies rgb×α exactly once at upload. Baking premultiplied
+ * data here would premultiply TWICE (gold×α²) — that darkened the rings into
+ * the grey-olive blanket Sergey reported; plain gold-over like mobile needs
+ * rgb = constant gold, α = the stepped profile.
  */
 let haloImage: RGBAImage | null = null;
 export function getGroundHaloImage(): RGBAImage {
@@ -119,10 +132,11 @@ export function getGroundHaloImage(): RGBAImage {
                 a += ring.opacity * coverage * (1 - a);
             }
             const o = (y * size + x) * 4;
-            // Premultiplied gold: rgb already scaled by alpha.
-            image.data[o + 0] = Math.round(GROUND_HALO_COLOR[0] * a * 255);
-            image.data[o + 1] = Math.round(GROUND_HALO_COLOR[1] * a * 255);
-            image.data[o + 2] = Math.round(GROUND_HALO_COLOR[2] * a * 255);
+            // Straight-alpha gold: constant rgb, coverage in alpha (the GPU
+            // premultiplies once at upload — see the doc comment above).
+            image.data[o + 0] = Math.round(GROUND_HALO_COLOR[0] * 255);
+            image.data[o + 1] = Math.round(GROUND_HALO_COLOR[1] * 255);
+            image.data[o + 2] = Math.round(GROUND_HALO_COLOR[2] * 255);
             image.data[o + 3] = Math.round(a * 255);
         }
     }
@@ -131,9 +145,9 @@ export function getGroundHaloImage(): RGBAImage {
 }
 
 /**
- * Owns the shared gold-halo texture and a per-selection ground quad, and draws
+ * Owns the shared gold-halo texture and the fixed-size ground quad, and draws
  * the disc under the selected model. One instance per model render-state; the
- * quad rebuilds only when the selected model's footprint size changes.
+ * quad is built once (the extent is a fixed 105 ground meters, like mobile).
  */
 export class ModelGroundHalo {
     private texture: Texture | null = null;
@@ -171,22 +185,22 @@ export class ModelGroundHalo {
      * bodies are drawn (so the depth buffer holds the building/model depth): the
      * read-only `LEQUAL` test lets the geometry occlude the disc centre, leaving
      * the gold ring hugging the footprint. Premultiplied-alpha blended (translucent
-     * pass color mode) and breathing on the native 4-second pulse.
+     * pass color mode) and breathing on the mobile 1.8-second pulse.
      *
      * @param anchorFx - anchor mercator x-fraction of the selected instance
      * @param anchorFy - anchor mercator y-fraction
      * @param lat0 - anchor latitude (meters→pixels scale)
-     * @param footprintSize - `model-scale × model-footprint` of the selected instance
      * @param opacity - the layer `model-opacity`
      */
-    draw(painter: Painter, layer: ModelStyleLayer, anchorFx: number, anchorFy: number, lat0: number, footprintSize: number, opacity: number): void {
+    draw(painter: Painter, layer: ModelStyleLayer, anchorFx: number, anchorFy: number, lat0: number, opacity: number): void {
         const context = painter.context;
         const gl = context.gl;
         const transform = painter.transform;
         const worldSize = transform.worldSize;
 
-        const half = footprintSize * GROUND_HALO_RADIUS_FACTOR;
-        if (!(half > 0)) return;
+        // Fixed ground meters — mobile's rings are absolute 105/85/68 m circles,
+        // independent of the selected model's footprint.
+        const half = GROUND_HALO_OUTER_RADIUS_METERS;
 
         if (!this.texture) {
             this.texture = new Texture(context, getGroundHaloImage(), gl.RGBA, {premultiply: true});
